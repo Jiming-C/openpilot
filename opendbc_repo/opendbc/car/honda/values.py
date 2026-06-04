@@ -198,6 +198,8 @@ class CAR(Platforms):
   HONDA_CIVIC_2022 = HondaBoschPlatformConfig(
     [
       HondaCarDocs("Honda Civic 2022-24", "All", video="https://youtu.be/ytiOT5lcp6Q"),
+      HondaCarDocs("Honda Civic Si 2022-24", "All"),
+      HondaCarDocs("Honda Civic Type R 2023-24", "All"),
       HondaCarDocs("Honda Civic Hybrid 2025-26", "All"),
       HondaCarDocs("Honda Civic Hatchback 2022-24", "All", video="https://youtu.be/ytiOT5lcp6Q"),
       HondaCarDocs("Honda Civic Hatchback Hybrid (Europe only) 2023", "All"),
