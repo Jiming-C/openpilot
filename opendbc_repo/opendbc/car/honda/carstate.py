@@ -38,6 +38,10 @@ class CarState(CarStateBase, CarStateExt):
 
     self.brake_error_msg = "HYBRID_BRAKE_ERROR" if CP.flags & HondaFlags.HYBRID else "STANDSTILL"
 
+    # Manual transmission: GEARBOX_ALT_2.GEAR_MT == 0 ("Clutch") means the drivetrain is
+    # disconnected (clutch pedal pressed or in neutral). Used to inhibit gas/brake.
+    self.clutch_disconnected = False
+
     self.steer_status_values = defaultdict(lambda: "UNKNOWN", can_define.dv["STEER_STATUS"]["STEER_STATUS"])
 
     self.brake_switch_prev = False
@@ -157,6 +161,10 @@ class CarState(CarStateBase, CarStateExt):
 
     if self.CP.transmissionType == TransmissionType.manual:
       ret.gearShifter = GearShifter.reverse if bool(cp.vl[self.car_state_scm_msg]["REVERSE_LIGHT"]) else GearShifter.drive
+      # GEAR_MT == 0 ("Clutch") => clutch pedal pressed or in neutral (drivetrain disconnected).
+      # Validated against logs: reads engaged gear (1-6) normally, 0 during clutch use / shifts.
+      self.clutch_disconnected = cp.vl["GEARBOX_ALT_2"]["GEAR_MT"] == 0
+      ret.clutchPressedDEPRECATED = self.clutch_disconnected
     else:
       gear_position = self.shifter_values.get(cp.vl[self.gearbox_msg]["GEAR_SHIFTER"], None)
       ret.gearShifter = self.parse_gear_shifter(gear_position)
