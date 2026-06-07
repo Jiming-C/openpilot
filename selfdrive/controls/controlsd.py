@@ -51,6 +51,11 @@ class Controls(ControlsExt):
     self.curvature = 0.0
     self.desired_curvature = 0.0
 
+    # Yield-on-override: when the driver has hands on the wheel (steeringPressed), ramp openpilot's
+    # steering torque toward zero so it physically lets go instead of fighting, then ramp back when
+    # hands come off. Lateral stays engaged (MADS) the whole time. Ramp down ~0.3s, up ~0.7s.
+    self.steer_override_factor = 1.0
+
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
 
@@ -146,6 +151,16 @@ class Controls(ControlsExt):
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        self.calibrated_pose, curvature_limited, lat_delay)
+
+    # Yield-on-override: ramp openpilot steering torque toward 0 while the driver's hands are on the
+    # wheel (steeringPressed), so it lets go instead of fighting; ramp back smoothly when hands off.
+    # Only scales the torque path (Honda is torque-controlled); MADS stays engaged.
+    if CC.latActive and CS.steeringPressed:
+      self.steer_override_factor = max(0.0, self.steer_override_factor - DT_CTRL / 0.3)
+    else:
+      self.steer_override_factor = min(1.0, self.steer_override_factor + DT_CTRL / 0.7)
+    steer *= self.steer_override_factor
+
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
     # Ensure no NaNs/Infs
