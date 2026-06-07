@@ -420,6 +420,7 @@ STEER_THRESHOLD = {
   CAR.HONDA_CRV_6G: 600,
   CAR.HONDA_CITY_7G: 600,
   CAR.HONDA_NBOX_2G: 600,
+  CAR.HONDA_CIVIC_2022: 600,  # Si 6MT: lower from default 1200 so a normal wheel grab triggers steer override (MADS)
 }
 
 
