@@ -123,14 +123,18 @@ class CarController(CarControllerBase, MadsCarController, GasInterceptorCarContr
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
 
-    # Manual transmission safety: when the clutch is pressed or the car is in neutral
-    # (drivetrain disconnected, GEARBOX_ALT_2.GEAR_MT == 0), command no gas or brake.
-    # Prevents engine flare with the clutch in and a lurch on clutch re-engagement.
+    # Manual transmission safety: clutch pressed or in neutral (drivetrain disconnected,
+    # GEARBOX_ALT_2.GEAR_MT == 0). Braking is still allowed — it doesn't go through the drivetrain
+    # and is needed to slow/stop (you MUST clutch in below idle when stopping a manual). Only gas is
+    # blocked, since commanding gas with the clutch in just flares the engine and lurches on
+    # re-engagement. So: clamp accel to <= 0 (allow brake, block gas).
     clutch_disconnected = getattr(CS, "clutch_disconnected", False)
 
-    if CC.longActive and not clutch_disconnected:
+    if CC.longActive:
       accel = actuators.accel
-      gas, brake = compute_gas_brake(actuators.accel, CS.out.vEgo, self.CP.carFingerprint)
+      if clutch_disconnected:
+        accel = min(accel, 0.0)
+      gas, brake = compute_gas_brake(accel, CS.out.vEgo, self.CP.carFingerprint)
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
