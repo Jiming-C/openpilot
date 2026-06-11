@@ -34,6 +34,11 @@ class ModularAssistiveDrivingSystem:
     self.active = False
     self.available = False
     self.lateral_mismatch_counter = 0
+    # Awareness chime: ping when lateral RESUMES while MADS stays armed (e.g. after a blinker pause).
+    # Armed only after lateral has actually dropped during an engagement, so a fresh engage never chimes.
+    self._lat_active_prev = False
+    self._resume_armed = False
+    self._resume_chime_timer = 0
     self.allow_always = False
     self.no_main_cruise = False
     self.selfdrive = selfdrive
@@ -212,6 +217,25 @@ class ModularAssistiveDrivingSystem:
       return
 
     self.data_sample()
+
+    # Awareness chime when lateral RESUMES while MADS stays armed (e.g. the blinker pause ends and
+    # steering quietly comes back). Arm on the falling edge (lateral dropped mid-engagement); fire on
+    # the next rising edge. This excludes the initial engage (no prior drop) and is consumed on any
+    # resume so a skipped low-speed/standstill resume can't linger. Hold a few frames so 20Hz soundd
+    # reliably samples it.
+    lat_active = bool(self.selfdrive.sm['carControl'].latActive)
+    if self.enabled and self._lat_active_prev and not lat_active:
+      self._resume_armed = True
+    if self.enabled and lat_active and not self._lat_active_prev:
+      if self._resume_armed and CS.vEgo > 1.5:
+        self._resume_chime_timer = 25
+      self._resume_armed = False
+    if not self.enabled:
+      self._resume_armed = False
+    self._lat_active_prev = lat_active
+    if self._resume_chime_timer > 0:
+      self._resume_chime_timer -= 1
+      self.events_sp.add(EventNameSP.e2eChime)
 
     self.update_events(CS)
 

@@ -158,7 +158,10 @@ class UIState(UIStateSP):
       else:
         self.status = UIStatus.ENGAGED if ss.enabled else UIStatus.DISENGAGED
 
-      self.status = UIStatus(UIStateSP.update_status(ss, self.sm["selfdriveStateSP"], self.sm["onroadEvents"]))
+      ss_sp = self.sm["selfdriveStateSP"]
+      # MADS armed but lateral isn't actually steering (e.g. blinker pause) while moving -> show standby
+      lateral_paused = ss_sp.mads.enabled and not self.sm["carControl"].latActive and self.sm["carState"].vEgo > 1.0
+      self.status = UIStatus(UIStateSP.update_status(ss, ss_sp, self.sm["onroadEvents"], lateral_paused))
 
     # Check for engagement state changes
     if self.engaged != self._engaged_prev:

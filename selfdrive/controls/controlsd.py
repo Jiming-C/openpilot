@@ -56,6 +56,10 @@ class Controls(ControlsExt):
     # hands come off. Lateral stays engaged (MADS) the whole time. Ramp down ~0.3s, up ~0.7s.
     self.steer_override_factor = 1.0
 
+    # Cached lateral-active state for the cycle (set in state_control, reused in publish) so the
+    # blinker-pause timer inside get_lat_active() only advances once per frame.
+    self._lat_active = False
+
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
 
@@ -113,10 +117,12 @@ class Controls(ControlsExt):
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
 
-    # Get which state to use for active lateral control
-    _lat_active = self.get_lat_active(self.sm)
+    # Get which state to use for active lateral control. Cache it: get_lat_active() drives the
+    # blinker-pause countdown timer, and it must be evaluated exactly ONCE per control cycle
+    # (publish() reuses self._lat_active). Calling it twice ran the timer at 2x speed.
+    self._lat_active = self.get_lat_active(self.sm)
 
-    CC.latActive = _lat_active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
+    CC.latActive = self._lat_active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
                    (not standstill or self.CP.steerAtStandstill)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and \
                     (self.CP.openpilotLongitudinalControl or not self.CP_SP.pcmCruiseSpeed)
@@ -203,7 +209,7 @@ class Controls(ControlsExt):
       hudControl.leftLaneDepart = self.sm['driverAssistance'].leftLaneDeparture
       hudControl.rightLaneDepart = self.sm['driverAssistance'].rightLaneDeparture
 
-    if self.get_lat_active(self.sm):
+    if self._lat_active:
       CO = self.sm['carOutput']
       if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
         self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \

@@ -85,7 +85,7 @@ class UIStateSP:
     return self.onroad_brightness in (OnroadBrightness.AUTO, OnroadBrightness.AUTO_DARK)
 
   @staticmethod
-  def update_status(ss, ss_sp, onroad_evt) -> str:
+  def update_status(ss, ss_sp, onroad_evt, lateral_paused=False) -> str:
     state = ss.state
     mads = ss_sp.mads
     mads_state = mads.state
@@ -101,6 +101,11 @@ class UIStateSP:
         return "override"
 
     if mads_state in (MADSState.paused, MADSState.overriding):
+      return "override"
+
+    # MADS armed but lateral not actually steering (e.g. blinker pause) — surface it as "override"
+    # (white/standby colors) so the driver can see steering is momentarily off, then snap back.
+    if lateral_paused:
       return "override"
 
     # MADS specific statuses
