@@ -186,9 +186,11 @@ def create_lkas_hud(packer, bus, CP, hud_control, lat_active, steering_available
 
   if CP.carFingerprint in (HONDA_BOSCH_RADARLESS | HONDA_BOSCH_CANFD):
     lkas_hud_values['LANE_LINES'] = 3
-    # Keep the MADS-aware dashed cue (mads armed but not actively steering, e.g. blinker pause)
-    # instead of clobbering it with lat_active — lets the stock cluster show "armed" vs "steering".
-    lkas_hud_values['DASHED_LANES'] = dashed_lanes
+    # NOTE: the MADS-aware dashed cue (mads.enabled and not latActive) was reverted: Honda has
+    # steerAtStandstill=False, so latActive drops at EVERY stop while MADS stays engaged, which made
+    # the cluster flip green->gray dashed at every red light (un-OEM). Track lat_active so the cluster
+    # matches the prior behavior. Pause feedback lives on the comma screen + chime instead.
+    lkas_hud_values['DASHED_LANES'] = lat_active
 
     # car likely needs to see LKAS_PROBLEM fall within a specific time frame, so forward from camera
     # TODO: needed for Bosch CAN FD?
