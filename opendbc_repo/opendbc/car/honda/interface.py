@@ -112,8 +112,16 @@ class CarInterface(CarInterfaceBase):
 
     elif candidate == CAR.HONDA_CIVIC_2022:
       # Civic Si (6MT) wobble tune, validated on-road: kp 0.5->0.3, ki 0.125->0.09 kills a
-      # ~2.5Hz proportional-driven steering oscillation at 25-45mph (torqueBP already 4096).
-      ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 4096], [0, 4096]]  # TODO: determine if there is a dead zone at the top end
+      # ~2.5Hz proportional-driven steering oscillation at 25-45mph.
+      # EXPERIMENT (revert to 4096 if no gain): raised STEER_MAX 4096 -> 6144 (0x1800, 1.5x).
+      # Log 00000122--51af95bc9d seg74: 71mph, ~292m radius curve, STEER_TORQUE pegged at -4096
+      # for 183 frames; planner asked 3.45 m/s^2 lat accel, car delivered only 2.09 -> "turn
+      # exceeds limit". Honda safety has NO torque cap (opendbc/safety/modes/honda.h never calls
+      # steer_torque_cmd_checks, unlike Toyota's max_torque=1500), so 4096 is a software-only
+      # convention. If actualLateralAccel stays ~2.09 at 6144, the EPS motor is clipping and this
+      # is a dead end -> revert. NOTE: rate limit is normalized (0->max in 0.33s), so absolute
+      # torque now ramps 1.5x faster; wheel moves more assertively on engage.
+      ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 6144], [0, 6144]]
       ret.lateralTuning.pid.kpBP, ret.lateralTuning.pid.kpV = [[0, 10], [0.05, 0.3]]
       ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kiV = [[0, 10], [0.0125, 0.09]]
 
