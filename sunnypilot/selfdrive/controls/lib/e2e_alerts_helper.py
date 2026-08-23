@@ -164,7 +164,12 @@ class E2EAlertsHelper:
       lead_depart_trigger
     )
 
-    if self.green_light_alert or self.lead_depart_alert:
+    # Split so the green-light cue is audibly distinct from the lead-departure cue and from the
+    # MADS lateral-resume chime (mads.py), which also uses e2eChime. Same sound for all three made
+    # "light turned green" and "steering came back" indistinguishable at a glance.
+    if self.green_light_alert:
+      events_sp.add(custom.OnroadEventSP.EventName.greenLightChime)
+    if self.lead_depart_alert:
       events_sp.add(custom.OnroadEventSP.EventName.e2eChime)
 
     self.frame += 1
