@@ -31,6 +31,14 @@ VOLUME_BASE = 20
 if HARDWARE.get_device_type() == "tizi":
   AMBIENT_DB = 30
   VOLUME_BASE = 10
+elif HARDWARE.get_device_type() == "mici":
+  # The comma 4 mic reads far lower than the tuning above assumes. Measured in a 2024 Civic Si
+  # (route 00000124): 27 dB stopped, 38 dB at 35-50 mph, 43 dB at 50+ mph. Under the default
+  # curve that maps to 9-37% volume, i.e. alerts are inaudible over road noise. Recalibrate so
+  # the observed 27-43 dB range spans a useful volume range instead of the bottom third of it.
+  AMBIENT_DB = 20
+  DB_SCALE = 22
+  VOLUME_BASE = 6
 
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 AudibleAlertSP = custom.SelfdriveStateSP.AudibleAlert
