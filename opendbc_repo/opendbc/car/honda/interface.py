@@ -112,8 +112,18 @@ class CarInterface(CarInterfaceBase):
 
     elif candidate == CAR.HONDA_CIVIC_2022:
       # Civic Si (6MT) wobble tune, validated on-road: kp 0.5->0.3, ki 0.125->0.09 kills a
-      # ~2.5Hz proportional-driven steering oscillation at 25-45mph (torqueBP already 4096).
-      ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 4096], [0, 4096]]  # TODO: determine if there is a dead zone at the top end
+      # ~2.5Hz proportional-driven steering oscillation at 25-45mph.
+      # DO NOT raise torqueBP above 4096. Tried 6144 (route 00000124, 2026-08-23): CAN carried the
+      # full 6144, but learned latAccelFactor moved only 1.97 -> 2.09 (+6%) for a +50% command, then
+      # plateaued -- i.e. the EPS ignores most of it (the "dead zone" this TODO asks about; see
+      # commaai/openpilot#946, which measured Civic stock LKAS max at 0xA00=2560). Measured on this
+      # car: the stock camera never commands past ~2304 on bus 2, so 4096 is already ~1.6x stock.
+      # Cost of 6144 was real: STEER_DELTA_UP is applied to the normalized (-1..1) request, so a
+      # bigger ceiling slews absolute torque proportionally faster -> ~1.5Hz hunting, angle std 6.3deg.
+      # NOTE: EPS response is strongly speed-dependent (measured ~5.9 deg/s per 1000 torque at
+      # 20-30mph vs ~2.0 at 30-50mph), which is why it can swing hard through a low-speed 90deg
+      # corner yet saturate on a 70mph sweeper. That is not a regression.
+      ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 4096], [0, 4096]]
       ret.lateralTuning.pid.kpBP, ret.lateralTuning.pid.kpV = [[0, 10], [0.05, 0.3]]
       ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kiV = [[0, 10], [0.0125, 0.09]]
 
