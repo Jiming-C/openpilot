@@ -4,9 +4,15 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-Manual-transmission gauge: current gear plus a segmented RPM strip that doubles as a shift
-light. Only drawn while openpilot is fully disengaged, since it is there for the driver who is
-working the clutch themselves.
+Manual-transmission gauge: a big gear numeral beside a rev bar that doubles as a shift light.
+
+Drawn only while openpilot is fully disengaged and no alert is up. The torque bar and the
+steering-wheel icon both fade out on DISENGAGED, so the bottom band is free; alerts render
+before the HUD does, so anything drawn here would otherwise land on top of them.
+
+SIZING: mici is NOT a big_ui device - gui_app.big_ui() is true only for tici and tizi - so the
+screen is 536x240 and the onroad content rect is 476x240 after the 60px side panel. Every
+number below is against that, not the 2160x1080 the tici UI uses.
 """
 import pyray as rl
 
@@ -15,40 +21,63 @@ from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
-# Civic Si (FE1): red arc on the cluster begins just past 6500.
-REDLINE_RPM = 6500
-AMBER_RPM = REDLINE_RPM - 900   # 5600 - start warning well before the marked red zone
-RED_RPM = REDLINE_RPM - 300     # 6200 - shift now
+# Civic Si (FE1): the red arc on the cluster begins just past 6500.
+REDLINE_RPM = 6500.0
+# Split by how the car is actually used: the torque plateau runs 1800-5000 and peak power lands
+# near 5700, so green is the whole plateau, amber is getting on it, red is the top of the useful
+# band and the flash is the last call before the 6500 limiter.
+AMBER_RPM = 5000.0
+RED_RPM = 5900.0
+FLASH_RPM = 6300.0              # bar and numeral blink: shift now
 
-# Lugging is low revs UNDER LOAD. The 1.5T holds 192 lb-ft from ~2100, so it pulls cleanly from
-# low down; coasting at 1100 is ordinary driving and must not nag. Tune from logged RPM later.
-LUG_RPM = 1400
-LUG_PEDAL = 0.15                # fraction of travel that counts as "asking for power"
+# Measured on the car: it starts shaking around 600rpm under load, so warn from 900.
+LUG_RPM = 900.0
+LUG_PEDAL = 0.15
 LUG_MIN_SPEED = 2.2             # m/s, ~5 mph
+LUG_MIN_GEAR = 2
 
-GEAR_CLUTCH = 0                 # GEAR_MT: clutch in or neutral
+# GEAR_MT is derived from engine speed against wheel speed, so with the car stopped there is
+# nothing to derive it from and it holds whatever it last saw. Don't believe it below this.
+MIN_TRUST_SPEED = 1.3           # m/s, ~3 mph
+
+GEAR_CLUTCH = 0
 GEAR_REVERSE = 14
 
-SEG_COUNT = 40
+# Layout against the 476x240 content rect.
+MARGIN_X = 16
+BAR_H = 22
+BAR_BOTTOM = 16                 # bar's lower edge, up from the bottom of the rect
 
-# geometry, in px against the 2160x1080 onroad rect
-PAD_X = 40
-BOTTOM_GAP = 80                 # clears the 50px steering wheel icon in the bottom-left corner
-POD_H = 170
-GEAR_W = 150
-HINT_W = 70
-SEG_GAP = 6
-SEG_H = 56
+GEAR_SIZE = 170
+GEAR_X = 20                     # the numeral sits left, the bar runs full width beneath it
+GEAR_GAP = 6                    # between the numeral and the bar
 
-COL_FG = rl.Color(255, 255, 255, 235)
-COL_DIM = rl.Color(255, 255, 255, 115)
-COL_OFF = rl.Color(255, 255, 255, 26)
+# The onroad view masks its corners with a rounded black border, drawn as
+# draw_rectangle_rounded_lines_ex(rect, 0.2 * 1.02, ...) - a radius of about 0.204 * 240/2.
+# The numeral has to start below that or its top gets eaten.
+SCREEN_CORNER_R = 25
+HINT_SIZE = 34
+HINT_GAP = 16
+
+FLASH_HZ = 6.0
+FLASH_LOW = 0.15                # dim end of the blink, not fully off
+
 COL_OK = rl.Color(74, 222, 128, 255)
 COL_AMBER = rl.Color(251, 191, 36, 255)
 COL_RED = rl.Color(239, 68, 68, 255)
-COL_POD = rl.Color(10, 13, 17, 158)
-COL_POD_FLASH = rl.Color(224, 32, 42, 92)
-COL_EDGE = rl.Color(255, 255, 255, 26)
+COL_WHITE = rl.Color(255, 255, 255, 255)
+
+FG_ALPHA = 0.95
+TRACK_ALPHA = 0.15
+
+# Colour against position along the bar, so a given rev always lands on the same colour however
+# long the bar is. Green holds through ordinary revs, then runs smoothly to amber and to red.
+BAR_STOPS = (
+  (0.0, COL_OK),
+  (AMBER_RPM / REDLINE_RPM, COL_OK),
+  (RED_RPM / REDLINE_RPM, COL_AMBER),
+  (1.0, COL_RED),
+)
 
 
 def _gear_label(gear: int) -> str:
@@ -61,13 +90,43 @@ def _gear_label(gear: int) -> str:
   return "-"
 
 
+def _lerp_color(a: rl.Color, b: rl.Color, t: float) -> rl.Color:
+  t = min(1.0, max(0.0, t))
+  # round, not truncate: truncating biases every interpolated channel a step dark
+  return rl.Color(round(a.r + (b.r - a.r) * t),
+                  round(a.g + (b.g - a.g) * t),
+                  round(a.b + (b.b - a.b) * t), 255)
+
+
+def _gear_color(rpm: float, in_gear: bool) -> rl.Color:
+  """The numeral escalates with the bar: white, then amber, then red."""
+  if not in_gear or rpm < AMBER_RPM:
+    return COL_WHITE
+  if rpm < RED_RPM:
+    return COL_AMBER
+  return COL_RED
+
+
+def _bar_color(f: float) -> rl.Color:
+  """Colour of the bar at fraction f of redline."""
+  f = min(1.0, max(0.0, f))
+  for (f0, c0), (f1, c1) in zip(BAR_STOPS, BAR_STOPS[1:], strict=False):
+    if f <= f1:
+      span = f1 - f0
+      return _lerp_color(c0, c1, (f - f0) / span if span > 1e-6 else 0.0)
+  return BAR_STOPS[-1][1]
+
+
+def _with_alpha(colour: rl.Color, alpha: float) -> rl.Color:
+  return rl.Color(colour.r, colour.g, colour.b, int(255 * min(1.0, max(0.0, alpha))))
+
+
 class ManualGauge:
   def __init__(self):
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
-    self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
 
     self._rpm_filter = FirstOrderFilter(0.0, 0.12, 1 / gui_app.target_fps)
-    self._alpha_filter = FirstOrderFilter(0.0, 0.18, 1 / gui_app.target_fps)
+    self._fade_filter = FirstOrderFilter(0.0, 0.18, 1 / gui_app.target_fps)
 
     self._gear = GEAR_CLUTCH
     self._lugging = False
@@ -80,110 +139,97 @@ class ManualGauge:
     return str(cp.transmissionType) == 'manual'
 
   def update(self) -> None:
-    visible = ui_state.status == UIStatus.DISENGAGED and self._is_manual
-    self._alpha_filter.update(1.0 if visible else 0.0)
+    cs_sp = ui_state.sm['carStateSP']
+    cs = ui_state.sm['carState']
+    v_ego = cs.vEgo
+
+    gear = int(cs_sp.gearMt)
+    if 1 <= gear <= 6 and v_ego < MIN_TRUST_SPEED:
+      # stopped: the gear estimate is stale, so say neutral rather than guess
+      gear = GEAR_CLUTCH
+    self._gear = gear
+
+    # an alert owns the screen - it draws first and we would paint over it
+    alert_showing = ui_state.sm['selfdriveState'].alertSize != 0
+    visible = (ui_state.status == UIStatus.DISENGAGED and self._is_manual
+               and not alert_showing and gear != GEAR_REVERSE)
+    self._fade_filter.update(1.0 if visible else 0.0)
     if not visible:
       return
 
-    cs_sp = ui_state.sm['carStateSP']
-    cs = ui_state.sm['carState']
+    rpm = self._rpm_filter.update(max(0.0, float(cs_sp.engineRpm)))
 
-    self._gear = int(cs_sp.gearMt)
-    self._rpm_filter.update(float(cs_sp.engineRpm))
-
-    in_gear = 1 <= self._gear <= 6
-    self._lugging = (in_gear and self._gear >= 3 and
-                     self._rpm_filter.x < LUG_RPM and
+    self._lugging = (LUG_MIN_GEAR <= gear <= 6 and
+                     rpm < LUG_RPM and
                      cs_sp.pedalGas > LUG_PEDAL and
-                     cs.vEgo > LUG_MIN_SPEED)
+                     v_ego > LUG_MIN_SPEED)
 
   # ---------------------------------------------------------------- draw
 
   def render(self, rect: rl.Rectangle) -> None:
-    alpha = self._alpha_filter.x
-    if alpha < 0.01:
+    fade = self._fade_filter.x
+    if fade < 0.01:
       return
 
     rpm = max(0.0, self._rpm_filter.x)
     in_gear = 1 <= self._gear <= 6
-    at_redline = in_gear and rpm >= REDLINE_RPM
 
-    pod = rl.Rectangle(
-      rect.x + PAD_X,
-      rect.y + rect.height - BOTTOM_GAP - POD_H,
-      rect.width - 2 * PAD_X,
-      POD_H,
-    )
+    # blink the whole gauge once we are past the shift point
+    flash = 1.0
+    if in_gear and rpm >= FLASH_RPM:
+      flash = 1.0 if int(rl.get_time() * FLASH_HZ * 2) % 2 == 0 else FLASH_LOW
+    alpha = FG_ALPHA * flash * fade
 
-    # backdrop - flashes at redline so it reads without looking straight at it
-    flash = at_redline and (int(rl.get_time() * 6) % 2 == 0)
-    base = COL_POD_FLASH if flash else COL_POD
-    rl.draw_rectangle_rounded(pod, 0.18, 10, self._fade(base, alpha))
-    rl.draw_rectangle_rounded_lines_ex(pod, 0.18, 10, 2, self._fade(COL_EDGE, alpha))
+    bar_w = rect.width - 2 * MARGIN_X
+    bar_x = rect.x + MARGIN_X
+    bar_y = rect.y + rect.height - BAR_BOTTOM - BAR_H
+    self._draw_bar(bar_x, bar_y, bar_w, min(1.0, rpm / REDLINE_RPM), alpha, fade)
 
-    self._draw_gear(pod, rpm, in_gear, alpha)
-    self._draw_segments(pod, rpm, alpha)
-    self._draw_hint(pod, alpha)
-
-  def _draw_gear(self, pod: rl.Rectangle, rpm: float, in_gear: bool, alpha: float) -> None:
-    colour = COL_FG
-    if in_gear and rpm >= RED_RPM:
-      colour = COL_RED
-    elif in_gear and rpm >= AMBER_RPM:
-      colour = COL_AMBER
-
+    # gear numeral, left, big, taking the bar's colour as the revs climb
     label = _gear_label(self._gear)
-    size = 128
-    txt = measure_text_cached(self._font_bold, label, size)
-    pos = rl.Vector2(
-      pod.x + (GEAR_W - txt.x) / 2,
-      pod.y + (pod.height - txt.y) / 2 - 10,
-    )
-    rl.draw_text_ex(self._font_bold, label, pos, size, 0, self._fade(colour, alpha))
+    txt = measure_text_cached(self._font_bold, label, GEAR_SIZE)
+    pos = rl.Vector2(rect.x + GEAR_X, bar_y - GEAR_GAP - txt.y)
+    rl.draw_text_ex(self._font_bold, label, pos, GEAR_SIZE, 0,
+                    _with_alpha(_gear_color(rpm, in_gear), alpha))
 
-    cap = "GEAR"
-    cap_size = 20
-    cap_txt = measure_text_cached(self._font_medium, cap, cap_size)
-    cap_pos = rl.Vector2(pod.x + (GEAR_W - cap_txt.x) / 2, pod.y + pod.height - 36)
-    rl.draw_text_ex(self._font_medium, cap, cap_pos, cap_size, 2, self._fade(COL_DIM, alpha))
+    if self._lugging:
+      self._draw_hint(pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2, fade)
 
-  def _draw_segments(self, pod: rl.Rectangle, rpm: float, alpha: float) -> None:
-    x0 = pod.x + GEAR_W + 24
-    x1 = pod.x + pod.width - HINT_W - 16
-    span = x1 - x0
-    if span <= 0:
-      return
+  def _draw_bar(self, x: float, y: float, w: float, frac: float,
+                alpha: float, fade: float) -> None:
+    """One smooth pill: a faint full-length track, then a gradient fill with round caps."""
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, BAR_H), 1.0, 12,
+                              _with_alpha(COL_WHITE, TRACK_ALPHA * fade))
 
-    seg_w = (span - SEG_GAP * (SEG_COUNT - 1)) / SEG_COUNT
-    y = pod.y + (pod.height - SEG_H) / 2
-    frac = min(1.0, rpm / REDLINE_RPM)
-    lit = int(round(frac * SEG_COUNT))
+    r = BAR_H / 2
+    x0 = x + r                  # the caps' centres, so the pill ends land on x and x + w
+    span = w - 2 * r
+    tip = x0 + span * frac
 
-    for i in range(SEG_COUNT):
-      seg_rpm = ((i + 1) / SEG_COUNT) * REDLINE_RPM
-      if i < lit:
-        colour = COL_RED if seg_rpm >= RED_RPM else (COL_AMBER if seg_rpm >= AMBER_RPM else COL_OK)
-      else:
-        colour = COL_OFF
-      bar = rl.Rectangle(x0 + i * (seg_w + SEG_GAP), y, seg_w, SEG_H)
-      rl.draw_rectangle_rounded(bar, 0.3, 4, self._fade(colour, alpha))
+    # body, one band per colour stop; positions are against the whole bar, never the fill
+    for (f0, c0), (f1, c1) in zip(BAR_STOPS, BAR_STOPS[1:], strict=False):
+      xa = x0 + span * f0
+      if xa >= tip:
+        break
+      xb = x0 + span * f1
+      end = c1
+      if xb > tip:
+        end = _lerp_color(c0, c1, (tip - xa) / (xb - xa))
+        xb = tip
+      rl.draw_rectangle_gradient_h(int(xa), int(y), int(xb - xa) + 1, int(BAR_H),
+                                   _with_alpha(c0, alpha), _with_alpha(end, alpha))
 
-  def _draw_hint(self, pod: rl.Rectangle, alpha: float) -> None:
-    """Down-triangle meaning 'drop a gear'. Drawn rather than typed: the bundled bitmap font
-    has no arrow glyph."""
-    if not self._lugging:
-      return
-    cx = pod.x + pod.width - HINT_W / 2 - 12
-    cy = pod.y + pod.height / 2
-    w, h = 46.0, 38.0
-    colour = self._fade(COL_AMBER, alpha)
+    rl.draw_circle(int(x0), int(y + r), r, _with_alpha(COL_OK, alpha))
+    rl.draw_circle(int(tip), int(y + r), r, _with_alpha(_bar_color(frac), alpha))
+
+  def _draw_hint(self, cx: float, cy: float, fade: float) -> None:
+    """Down-triangle meaning 'drop a gear'. Drawn rather than typed: the bundled font has no
+    arrow glyph. Wound clockwise, which is what raylib fills."""
+    h = HINT_SIZE
+    colour = _with_alpha(COL_AMBER, FG_ALPHA * fade)
     rl.draw_triangle(
-      rl.Vector2(cx - w / 2, cy - h / 2),
+      rl.Vector2(cx - h / 2, cy - h / 3),
       rl.Vector2(cx, cy + h / 2),
-      rl.Vector2(cx + w / 2, cy - h / 2),
+      rl.Vector2(cx + h / 2, cy - h / 3),
       colour,
     )
-
-  @staticmethod
-  def _fade(colour: rl.Color, alpha: float) -> rl.Color:
-    return rl.Color(colour.r, colour.g, colour.b, int(colour.a * max(0.0, min(1.0, alpha))))
