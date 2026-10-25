@@ -86,7 +86,13 @@ class CarState(CarStateBase, CarStateExt):
 
     # blend in transmission speed at low speed, since it has more low speed accuracy
     # STANDSTILL->WHEELS_MOVING bit can be noisy around zero, so use XMISSION_SPEED
-    v_wheel = sum([cp.vl["WHEEL_SPEEDS"][f"WHEEL_SPEED_{s}"] for s in ("FL", "FR", "RL", "RR")]) / 4.0 * CV.KPH_TO_MS
+    # keep the individual wheels: they were being averaged away, and on a FWD car the undriven
+    # rear pair is a true ground-speed reference to measure front wheelspin against
+    ret.wheelSpeeds.fl = cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_FL"] * CV.KPH_TO_MS
+    ret.wheelSpeeds.fr = cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_FR"] * CV.KPH_TO_MS
+    ret.wheelSpeeds.rl = cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_RL"] * CV.KPH_TO_MS
+    ret.wheelSpeeds.rr = cp.vl["WHEEL_SPEEDS"]["WHEEL_SPEED_RR"] * CV.KPH_TO_MS
+    v_wheel = (ret.wheelSpeeds.fl + ret.wheelSpeeds.fr + ret.wheelSpeeds.rl + ret.wheelSpeeds.rr) / 4.0
     v_weight = float(np.interp(v_wheel, v_weight_bp, v_weight_v))
     ret.vEgoRaw = (1. - v_weight) * cp.vl["ENGINE_DATA"]["XMISSION_SPEED"] * CV.KPH_TO_MS * self.CP.wheelSpeedFactor + v_weight * v_wheel
     ret.vEgo, ret.aEgo = self.update_speed_kf(ret.vEgoRaw)
@@ -176,6 +182,8 @@ class CarState(CarStateBase, CarStateExt):
     # for the manual-transmission gauge; both already on the bus in POWERTRAIN_DATA
     ret_sp.engineRpm = float(cp.vl["POWERTRAIN_DATA"]["ENGINE_RPM"])
     ret_sp.pedalGas = float(cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"]) / 255.0
+    # 0x2FF is not in Honda's documentation; scaling derived from logged warm-up curves
+    ret_sp.coolantTemp = float(cp.vl["ENGINE_TEMPS"]["COOLANT_TEMP"])
 
     ret.steeringTorque = cp.vl["STEER_STATUS"]["STEER_TORQUE_SENSOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD.get(self.CP.carFingerprint, 1200)

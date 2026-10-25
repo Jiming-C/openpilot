@@ -82,11 +82,50 @@ EDGE_AMBER_HIGH = 0.45
 HINT_BLINK_HZ = 2.0             # the downshift arrow, which has to carry itself
 HINT_BLINK_LOW = 0.2
 
+# Coolant, decoded from 0x2FF - see the comment on COOLANT_TEMP in the Honda DBC. Colour runs
+# with temperature the way the rev bar runs with revs: blue while cold, white through the normal
+# band, red if it ever runs hot. The 1.5T sits around 90.
+COOL_MIN_C = 20.0               # bottom of the bar, and fully blue
+COOL_WARM_C = 70.0              # fully white from here: safe to wring out
+COOL_HOT_C = 100.0              # starts reddening
+COOL_MAX_C = 115.0              # top of the bar, and fully red
+COOL_NO_DATA_C = -35.0          # the signal decodes to -40 when the message is absent
+
+TEMP_SIZE = 48
+TEMP_LABEL_SIZE = 18
+TEMP_GAP = 2
+TEMP_TOP = 30                   # clears the rounded corner mask
+
+# Front wheelspin. The Si is FWD, so the undriven rear pair is a true ground-speed reference.
+# Cornering has to be taken out first: corr(steeringAngleDeg, FL-FR) measured -0.976 in logs,
+# i.e. almost all of the raw left-right difference is steering geometry, not slip. Positive
+# steeringAngleDeg is a LEFT turn, so the right wheels run outside and faster.
+TRACK_M = 1.54                  # FE1 front track; CarParams carries no track width
+SLIP_QUIET_KPH = 0.3            # measured straight-line noise floor: nothing to report below it
+SLIP_AMBER_KPH = 1.0            # fully amber
+SLIP_RED_KPH = 2.5              # fully red, and the wheel starts blinking
+SLIP_BLINK_HZ = 2.0             # once a wheel is fully red it is spinning, which is urgent
+SLIP_BLINK_LOW = 0.2
+SLIP_MIN_SPEED = 3.0            # m/s, below this the measurement means nothing
+BIAS_RC = 20.0                  # s, learns out per-wheel tyre wear / pressure offsets
+BIAS_MIN_SPEED = 8.0            # m/s
+BIAS_MAX_STEER = 5.0            # deg
+BIAS_MAX_PEDAL = 0.05
+
+# The two front wheels sit tight together directly under the coolant readout, both right
+# aligned to the same edge. The rears are the reference, so they have no slip of their own to
+# show - RL vs RR imbalance would be measurable, but it is not worth two more blocks here.
+WHEEL_W = 34
+WHEEL_H = 46
+WHEEL_GAP = 12
+WHEEL_Y = 108
+
 COL_OK = rl.Color(74, 222, 128, 255)
 COL_AMBER = rl.Color(251, 191, 36, 255)
 COL_RED = rl.Color(239, 68, 68, 255)
 COL_WHITE = rl.Color(255, 255, 255, 255)
 COL_BLACK = rl.Color(0, 0, 0, 255)
+COL_COLD = rl.Color(96, 165, 250, 255)   # same family as the green/amber/red
 
 FG_ALPHA = 0.95
 TRACK_ALPHA = 0.15
@@ -123,6 +162,29 @@ def _zone_color(rpm: float) -> rl.Color:
   return COL_RED
 
 
+def _slip_color(mag: float) -> rl.Color:
+  """Green through the noise floor, then eased to amber and on to red - same treatment as the
+  rev bar and the coolant, so the whole panel reads one way."""
+  if mag <= SLIP_QUIET_KPH:
+    return COL_OK
+  if mag < SLIP_AMBER_KPH:
+    return _lerp_color(COL_OK, COL_AMBER,
+                       (mag - SLIP_QUIET_KPH) / (SLIP_AMBER_KPH - SLIP_QUIET_KPH))
+  if mag < SLIP_RED_KPH:
+    return _lerp_color(COL_AMBER, COL_RED,
+                       (mag - SLIP_AMBER_KPH) / (SLIP_RED_KPH - SLIP_AMBER_KPH))
+  return COL_RED
+
+
+def _coolant_color(c: float) -> rl.Color:
+  """Blue cold, white through the normal band, red hot - eased, not stepped."""
+  if c <= COOL_WARM_C:
+    return _lerp_color(COL_COLD, COL_WHITE, (c - COOL_MIN_C) / (COOL_WARM_C - COOL_MIN_C))
+  if c < COOL_HOT_C:
+    return COL_WHITE
+  return _lerp_color(COL_WHITE, COL_RED, (c - COOL_HOT_C) / (COOL_MAX_C - COOL_HOT_C))
+
+
 def _gear_color(rpm: float, in_gear: bool) -> rl.Color:
   """White until the pulse starts, then it takes the bar's colour. The bar carries the smooth
   build; the numeral marks the moment it starts asking for a shift."""
@@ -138,13 +200,20 @@ def _with_alpha(colour: rl.Color, alpha: float) -> rl.Color:
 class ManualGauge:
   def __init__(self):
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
+    self._font_semi: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
 
+    dt = 1 / gui_app.target_fps
+    self._bias_fl = FirstOrderFilter(0.0, BIAS_RC, dt)
+    self._bias_fr = FirstOrderFilter(0.0, BIAS_RC, dt)
     self._rpm_filter = FirstOrderFilter(0.0, 0.12, 1 / gui_app.target_fps)
     self._fade_filter = FirstOrderFilter(0.0, 0.18, 1 / gui_app.target_fps)
 
     self._gear = GEAR_CLUTCH
     self._held_gear = 0         # last gear we actually believed, for the clutch hold
     self._clutch_since = 0.0
+    self._coolant = COOL_NO_DATA_C
+    self._slip_fl: float | None = None
+    self._slip_fr: float | None = None
     self._lugging = False
     self._upshift = False
 
@@ -192,12 +261,45 @@ class ManualGauge:
 
     rpm = self._rpm_filter.update(max(0.0, float(cs_sp.engineRpm)))
 
+    self._coolant = float(cs_sp.coolantTemp)
+    self._update_slip(cs, cs_sp)
+
     self._lugging = (LUG_MIN_GEAR <= gear <= 6 and
                      rpm < LUG_RPM and
                      cs_sp.pedalGas > LUG_PEDAL and
                      v_ego > LUG_MIN_SPEED)
     # from the amber stage on; nothing to go up to out of 6th
     self._upshift = 1 <= gear < 6 and rpm >= AMBER_RPM
+
+  def _update_slip(self, cs, cs_sp) -> None:
+    """Front wheelspin against the undriven rears, with the cornering geometry removed."""
+    ws = cs.wheelSpeeds
+    ground = (ws.rl + ws.rr) / 2.0
+    if ground < SLIP_MIN_SPEED:
+      self._slip_fl = self._slip_fr = None
+      return
+
+    cp = ui_state.CP
+    wheelbase = cp.wheelbase if cp and cp.wheelbase > 0.1 else 2.7
+    steer_ratio = cp.steerRatio if cp and cp.steerRatio > 1.0 else 15.38
+
+    delta = math.radians(cs.steeringAngleDeg / steer_ratio)
+    yaw = ground * math.tan(delta) / wheelbase          # rad/s
+    front = ground / max(0.5, math.cos(delta))          # front axle centre runs wider
+    exp_fl = front - yaw * TRACK_M / 2.0
+    exp_fr = front + yaw * TRACK_M / 2.0
+
+    raw_fl = (ws.fl - exp_fl) * 3.6
+    raw_fr = (ws.fr - exp_fr) * 3.6
+
+    # learn each wheel's standing offset while straight, steady and off the throttle
+    if (ground > BIAS_MIN_SPEED and abs(cs.steeringAngleDeg) < BIAS_MAX_STEER
+            and cs_sp.pedalGas < BIAS_MAX_PEDAL):
+      self._bias_fl.update(raw_fl)
+      self._bias_fr.update(raw_fr)
+
+    self._slip_fl = raw_fl - self._bias_fl.x
+    self._slip_fr = raw_fr - self._bias_fr.x
 
   # ---------------------------------------------------------------- draw
 
@@ -248,6 +350,9 @@ class ManualGauge:
     rl.draw_text_ex(self._font_bold, label, pos, GEAR_SIZE, 0,
                     _with_alpha(_gear_color(rpm, in_gear), alpha))
 
+    self._draw_coolant(rect, FG_ALPHA * fade)
+    self._draw_traction(rect, fade)
+
     hx, hy = pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2
     if self._upshift:
       # takes the bar's colour and its swell/blink, since it says the same thing
@@ -269,6 +374,52 @@ class ManualGauge:
     fill_w = max(BAR_H, w * frac)
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, fill_w, BAR_H), 1.0, 12,
                               _with_alpha(colour, alpha))
+
+  def _draw_coolant(self, rect: rl.Rectangle, alpha: float) -> None:
+    """Just the number, top right, in Celsius. The colour does the work a bar would: blue while
+    it is too cold to wring out, red if it ever runs hot."""
+    if self._coolant <= COOL_NO_DATA_C:
+      return
+
+    colour = _coolant_color(self._coolant)
+    # the bundled Inter .fnt does carry U+00B0 (unlike the arrow glyphs), so the unit rides on
+    # the number and the label just says what it is
+    text = f"{self._coolant:.0f}\u00b0C"
+    label = "COOLANT"
+    right = rect.x + rect.width - MARGIN_X
+    top = rect.y + TEMP_TOP
+
+    tv = measure_text_cached(self._font_bold, text, TEMP_SIZE)
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(right - tv.x, top), TEMP_SIZE, 0,
+                    _with_alpha(colour, alpha))
+    tl = measure_text_cached(self._font_semi, label, TEMP_LABEL_SIZE)
+    rl.draw_text_ex(self._font_semi, label, rl.Vector2(right - tl.x, top + tv.y + TEMP_GAP),
+                    TEMP_LABEL_SIZE, 0, _with_alpha(colour, alpha * 0.7))
+
+  def _draw_traction(self, rect: rl.Rectangle, fade: float) -> None:
+    """The two front wheels, tucked under the coolant readout and sharing its right edge.
+    Green while they track the undriven rears, amber or red as they break away, grey when we
+    are too slow for the measurement to mean anything."""
+    right = rect.x + rect.width - MARGIN_X
+    x0 = right - (2 * WHEEL_W + WHEEL_GAP)
+    for i, slip in enumerate((self._slip_fl, self._slip_fr)):
+      if slip is None:
+        colour, a = COL_WHITE, TRACK_ALPHA * fade
+      else:
+        mag = abs(slip)
+        colour, a = _slip_color(mag), FG_ALPHA * fade
+        if mag >= SLIP_RED_KPH:
+          # blink the wheel that is actually spinning, not the pair
+          lit = int(rl.get_time() * SLIP_BLINK_HZ * 2) % 2 == 0
+          a *= 1.0 if lit else SLIP_BLINK_LOW
+      box = rl.Rectangle(x0 + i * (WHEEL_W + WHEEL_GAP), rect.y + WHEEL_Y, WHEEL_W, WHEEL_H)
+      rl.draw_rectangle_rounded(box, 0.35, 6, _with_alpha(colour, a))
+
+    label = "TRACTION"
+    tl = measure_text_cached(self._font_semi, label, TEMP_LABEL_SIZE)
+    rl.draw_text_ex(self._font_semi, label,
+                    rl.Vector2(right - tl.x, rect.y + WHEEL_Y + WHEEL_H + TEMP_GAP),
+                    TEMP_LABEL_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.7 * fade))
 
   def _draw_edge_glow(self, rect: rl.Rectangle, colour: rl.Color, alpha: float) -> None:
     """Glow in from all four edges rather than washing the whole view. Corners get both passes,

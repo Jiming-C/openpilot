@@ -173,3 +173,4 @@ class CarStateSP:
   engineRpm: float = auto_field()
   gearMt: int = auto_field()
   pedalGas: float = auto_field()   # 0-1
+  coolantTemp: float = auto_field()  # degC

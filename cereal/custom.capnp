@@ -445,6 +445,10 @@ struct CarStateSP @0xb86e6369214c01c8 {
   engineRpm @1 :Float32;
   gearMt @2 :UInt8;
   pedalGas @3 :Float32;   # 0-1, normalised from the raw 0-255 signal
+
+  # Engine coolant, degC. Decoded from 0x2FF byte 3, which is not in Honda's own documentation -
+  # see the comment on COOLANT_TEMP in honda_bosch_radarless.dbc for how it was identified.
+  coolantTemp @4 :Float32;
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {
