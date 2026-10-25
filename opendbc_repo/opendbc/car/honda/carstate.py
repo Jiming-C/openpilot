@@ -163,13 +163,19 @@ class CarState(CarStateBase, CarStateExt):
       ret.gearShifter = GearShifter.reverse if bool(cp.vl[self.car_state_scm_msg]["REVERSE_LIGHT"]) else GearShifter.drive
       # GEAR_MT == 0 ("Clutch") => clutch pedal pressed or in neutral (drivetrain disconnected).
       # Validated against logs: reads engaged gear (1-6) normally, 0 during clutch use / shifts.
-      self.clutch_disconnected = cp.vl["GEARBOX_ALT_2"]["GEAR_MT"] == 0
+      gear_mt = cp.vl["GEARBOX_ALT_2"]["GEAR_MT"]
+      self.clutch_disconnected = gear_mt == 0
       ret.clutchPressedDEPRECATED = self.clutch_disconnected
+      ret_sp.gearMt = int(gear_mt)
     else:
       gear_position = self.shifter_values.get(cp.vl[self.gearbox_msg]["GEAR_SHIFTER"], None)
       ret.gearShifter = self.parse_gear_shifter(gear_position)
 
     ret.gasPressed = cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"] > 1e-5
+
+    # for the manual-transmission gauge; both already on the bus in POWERTRAIN_DATA
+    ret_sp.engineRpm = float(cp.vl["POWERTRAIN_DATA"]["ENGINE_RPM"])
+    ret_sp.pedalGas = float(cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"]) / 255.0
 
     ret.steeringTorque = cp.vl["STEER_STATUS"]["STEER_TORQUE_SENSOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD.get(self.CP.carFingerprint, 1200)

@@ -8,20 +8,24 @@ import pyray as rl
 
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.sunnypilot.onroad.blind_spot_indicators import BlindSpotIndicators
+from openpilot.selfdrive.ui.sunnypilot.onroad.manual_gauge import ManualGauge
 
 
 class HudRendererSP(HudRenderer):
   def __init__(self):
     super().__init__()
     self.blind_spot_indicators = BlindSpotIndicators()
+    self.manual_gauge = ManualGauge()
 
   def _update_state(self) -> None:
     super()._update_state()
     self.blind_spot_indicators.update()
+    self.manual_gauge.update()
 
   def _render(self, rect: rl.Rectangle) -> None:
     super()._render(rect)
     self.blind_spot_indicators.render(rect)
+    self.manual_gauge.render(rect)
 
   def _has_blind_spot_detected(self) -> bool:
 

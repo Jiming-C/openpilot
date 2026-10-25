@@ -438,6 +438,13 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
+
+  # Manual-transmission gauge. GEARBOX_ALT_2.GEAR_MT reads 0 with the clutch in or the box in
+  # neutral, 1-6 for an engaged gear and 14 for reverse. ENGINE_RPM and PEDAL_GAS both ride in
+  # POWERTRAIN_DATA, which carstate already parses, so no extra CAN subscriptions.
+  engineRpm @1 :Float32;
+  gearMt @2 :UInt8;
+  pedalGas @3 :Float32;   # 0-1, normalised from the raw 0-255 signal
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {
