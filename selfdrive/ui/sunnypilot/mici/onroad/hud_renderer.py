@@ -24,8 +24,10 @@ class HudRendererSP(HudRenderer):
 
   def _render(self, rect: rl.Rectangle) -> None:
     super()._render(rect)
-    self.blind_spot_indicators.render(rect)
+    # the gauge lays a scrim over the camera feed, and the blind-spot indicators have no
+    # engagement gate, so they go on top of it rather than under it
     self.manual_gauge.render(rect)
+    self.blind_spot_indicators.render(rect)
 
   def _has_blind_spot_detected(self) -> bool:
 
