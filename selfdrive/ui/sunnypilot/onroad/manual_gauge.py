@@ -65,17 +65,6 @@ GEAR_RATIOS = {1: 215.0, 2: 122.7, 3: 80.1, 4: 60.2, 5: 48.8, 6: 40.3}   # rpm p
 RATIO_LOW_TOL = 0.03
 RATIO_MIN_MPH = 12.0
 
-# Rev-match: off the throttle and slowing, show what the next gear down would land at. Pure
-# arithmetic off the same measured ratios - no extra CAN. Red when that downshift would go past
-# redline, which is the one case where the number has to stop you rather than help you.
-REVMATCH_MIN_GEAR = 2
-REVMATCH_MAX_PEDAL = 0.05
-REVMATCH_MIN_MPH = 15.0
-REVMATCH_X = 150
-REVMATCH_Y = 56
-REVMATCH_SIZE = 48
-REVMATCH_LABEL = 18
-
 # GEAR_MT also reads 0 for the whole time the clutch is down, so every shift would flash N
 # between gears. Hold the gear we were in for a moment: a shift is quicker than this, sitting
 # in neutral is not, so a real neutral still falls through to N.
@@ -104,7 +93,7 @@ AMBER_PULSE_HZ = 3.0
 AMBER_PULSE_LOW = 0.5           # a swell, not a blink - it runs for a long stretch of revs
 RED_FLASH_HZ = 6.0
 RED_FLASH_LOW = 0.15            # dim end of the blink, not fully off
-SCRIM_ALPHA = 0.65              # black over the camera feed, see SCRIM note in render
+SCRIM_ALPHA = 1.0               # black over the camera feed, see SCRIM note in render
 
 EDGE_GLOW = 52                  # how far the glow reaches in from each edge
 EDGE_RED_ALPHA = 0.65
@@ -122,9 +111,8 @@ SWEEP_DOWN = 0.6                # and back down
 SWEEP_TOTAL = SWEEP_UP + SWEEP_DOWN
 
 
-TEMP_SIZE = 48
-TEMP_LABEL_SIZE = 18
-TEMP_GAP = 2
+LABEL_SIZE = 18                 # the TRACTION caption
+LABEL_GAP = 2
 
 # Front wheelspin. The Si is FWD, so the undriven rear pair is a true ground-speed reference.
 # Cornering has to be taken out first: corr(steeringAngleDeg, FL-FR) measured -0.976 in logs,
@@ -142,12 +130,19 @@ BIAS_MIN_SPEED = 8.0            # m/s
 BIAS_MAX_STEER = 5.0            # deg
 BIAS_MAX_PEDAL = 0.05
 
-# The two front wheels sit tight together in the top right, right aligned to the margin. The rears are the reference, so they have no slip of their own to
-# show - RL vs RR imbalance would be measurable, but it is not worth two more blocks here.
-WHEEL_W = 34
-WHEEL_H = 46
-WHEEL_GAP = 12
-WHEEL_Y = 56
+# A plain top-down car in the top right, right aligned to the margin. The body is an outline for
+# context only; the blocks are the wheels, straddling its edges. The fronts carry the slip
+# colour. The rears are the reference the fronts are measured against, so they stay a flat dim -
+# they have nothing of their own to report, and showing them as live would be a lie.
+CAR_W = 72                      # body, not counting the wheels straddling its edges
+CAR_H = 132
+CAR_Y = 36                      # body top, down from the top of the rect
+CAR_ROUND = 0.30
+CAR_LINE = 2
+CAR_ALPHA = 0.22
+WHEEL_W = 20
+WHEEL_H = 36
+WHEEL_INSET = 19                # wheel centre, in from each end of the body
 
 COL_OK = rl.Color(74, 222, 128, 255)
 COL_AMBER = rl.Color(251, 191, 36, 255)
@@ -246,7 +241,6 @@ class ManualGauge:
     self._slip_fr: float | None = None
     self._lugging = False
     self._upshift = False
-    self._revmatch: tuple[int, float] | None = None
     self._sweep_start: float | None = None
     self._sweep_done = False
 
@@ -311,12 +305,6 @@ class ManualGauge:
     self._upshift = (1 <= gear < 6 and rpm >= AMBER_RPM
                      and cs_sp.pedalGas > UPSHIFT_MIN_PEDAL)
 
-    mph = v_ego * 2.23694
-    self._revmatch = None
-    if (REVMATCH_MIN_GEAR <= gear <= 6 and cs_sp.pedalGas < REVMATCH_MAX_PEDAL
-            and mph > REVMATCH_MIN_MPH):
-      self._revmatch = (gear - 1, GEAR_RATIOS[gear - 1] * mph)
-
   def _update_slip(self, cs, cs_sp) -> None:
     """Front wheelspin against the undriven rears, with the cornering geometry removed."""
     ws = cs.wheelSpeeds
@@ -355,8 +343,11 @@ class ManualGauge:
       return
 
     # SCRIM: this only draws while openpilot is disengaged, and then you are driving the car
-    # yourself - the camera view is background, not something you are reading. Knocking it back
-    # buys a lot of contrast on a small, bright screen. Everything below lands on top of it.
+    # yourself by eye, so the camera view is not something you are reading: it goes fully black
+    # and the gauge gets the whole screen's contrast. Everything below lands on top of it.
+    # This saves no work. camerad and modeld run regardless, and the road view underneath is
+    # still drawn, so an opaque scrim is one fullscreen fill - the same cost as a translucent
+    # one, not a saving. Not drawing the road at all would be a change in augmented_road_view.
     # NOTE: the blind-spot indicators have no engagement gate, so HudRendererSP renders them
     # AFTER this widget to keep them out from under the scrim.
     rl.draw_rectangle_rec(rect, _with_alpha(COL_BLACK, SCRIM_ALPHA * fade))
@@ -402,7 +393,6 @@ class ManualGauge:
                     _with_alpha(_gear_color(rpm, in_gear), alpha))
 
     self._draw_traction(rect, fade)
-    self._draw_revmatch(rect, FG_ALPHA * fade)
 
     hx, hy = pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2
     if self._upshift:
@@ -462,27 +452,24 @@ class ManualGauge:
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, fill_w, BAR_H), 1.0, 12,
                               _with_alpha(colour, alpha))
 
-  def _draw_revmatch(self, rect: rl.Rectangle, alpha: float) -> None:
-    """What the next gear down would land at, while off the throttle and slowing."""
-    if self._revmatch is None:
-      return
-    gear, target = self._revmatch
-    colour = COL_RED if target > REDLINE_RPM else COL_WHITE
-    x, y = rect.x + REVMATCH_X, rect.y + REVMATCH_Y
-    txt = f"{target:.0f}"
-    tv = measure_text_cached(self._font_bold, txt, REVMATCH_SIZE)
-    rl.draw_text_ex(self._font_bold, txt, rl.Vector2(x, y), REVMATCH_SIZE, 0,
-                    _with_alpha(colour, alpha))
-    rl.draw_text_ex(self._font_semi, f"FOR {gear}", rl.Vector2(x, y + tv.y + TEMP_GAP),
-                    REVMATCH_LABEL, 0, _with_alpha(colour, alpha * 0.7))
-
   def _draw_traction(self, rect: rl.Rectangle, fade: float) -> None:
-    """The two front wheels, top right against the margin.
-    Green while they track the undriven rears, amber or red as they break away, grey when we
-    are too slow for the measurement to mean anything."""
+    """A top-down car, top right against the margin. The front wheels are green while they track
+    the undriven rears, amber or red as they break away, and grey when we are too slow for the
+    measurement to mean anything. The rears are that reference, so they stay dim."""
     right = rect.x + rect.width - MARGIN_X
-    x0 = right - (2 * WHEEL_W + WHEEL_GAP)
-    for i, slip in enumerate((self._slip_fl, self._slip_fr)):
+    bx = right - CAR_W - WHEEL_W / 2.0
+    by = rect.y + CAR_Y
+
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(bx, by, CAR_W, CAR_H), CAR_ROUND, 12,
+                                       CAR_LINE, _with_alpha(COL_WHITE, CAR_ALPHA * fade))
+
+    def wheel(cx: float, cy: float, colour: rl.Color, a: float) -> None:
+      box = rl.Rectangle(cx - WHEEL_W / 2.0, cy - WHEEL_H / 2.0, WHEEL_W, WHEEL_H)
+      rl.draw_rectangle_rounded(box, 0.35, 6, _with_alpha(colour, a))
+
+    # fronts: the measurement
+    front_y = by + WHEEL_INSET
+    for cx, slip in ((bx, self._slip_fl), (bx + CAR_W, self._slip_fr)):
       if slip is None:
         colour, a = COL_WHITE, TRACK_ALPHA * fade
       else:
@@ -492,14 +479,18 @@ class ManualGauge:
           # blink the wheel that is actually spinning, not the pair
           lit = int(rl.get_time() * SLIP_BLINK_HZ * 2) % 2 == 0
           a *= 1.0 if lit else SLIP_BLINK_LOW
-      box = rl.Rectangle(x0 + i * (WHEEL_W + WHEEL_GAP), rect.y + WHEEL_Y, WHEEL_W, WHEEL_H)
-      rl.draw_rectangle_rounded(box, 0.35, 6, _with_alpha(colour, a))
+      wheel(cx, front_y, colour, a)
+
+    # rears: the reference, and decoration. Flat dim, never coloured.
+    rear_y = by + CAR_H - WHEEL_INSET
+    for cx in (bx, bx + CAR_W):
+      wheel(cx, rear_y, COL_WHITE, TRACK_ALPHA * fade)
 
     label = "TRACTION"
-    tl = measure_text_cached(self._font_semi, label, TEMP_LABEL_SIZE)
+    tl = measure_text_cached(self._font_semi, label, LABEL_SIZE)
     rl.draw_text_ex(self._font_semi, label,
-                    rl.Vector2(right - tl.x, rect.y + WHEEL_Y + WHEEL_H + TEMP_GAP),
-                    TEMP_LABEL_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.7 * fade))
+                    rl.Vector2(right - tl.x, by + CAR_H + LABEL_GAP),
+                    LABEL_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.7 * fade))
 
   def _draw_edge_glow(self, rect: rl.Rectangle, colour: rl.Color, alpha: float) -> None:
     """Glow in from all four edges rather than washing the whole view. Corners get both passes,
