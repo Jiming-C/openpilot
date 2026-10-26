@@ -104,8 +104,10 @@ GEAR_GAP = 6                    # between the numeral and the bar
 # draw_rectangle_rounded_lines_ex(rect, 0.2 * 1.02, ...) - a radius of about 0.204 * 240/2.
 # The numeral has to start below that or its top gets eaten.
 SCREEN_CORNER_R = 25
-HINT_SIZE = 34
-HINT_GAP = 16
+# The middle of the screen is otherwise empty, so the arrow gets to be the size of the
+# thing it is competing with - a glance has to land on it without reading anything.
+HINT_SIZE = 96
+HINT_GAP = 28
 
 AMBER_PULSE_HZ = 3.0
 AMBER_PULSE_LOW = 0.5           # a swell, not a blink - it runs for a long stretch of revs
@@ -126,7 +128,12 @@ HINT_BLINK_LOW = 0.2
 # glance at startup confirms all of it is really being drawn. Once per boot, not per disengage.
 SWEEP_UP = 0.6                  # seconds, bar 0 -> redline
 SWEEP_DOWN = 0.6                # and back down
-SWEEP_TOTAL = SWEEP_UP + SWEEP_DOWN
+# ...then ease out of the sweep's end state into the live one. Without this the handover is a
+# cut: the sweep finishes green with an empty bar, while the live gauge is already sitting at
+# idle with white numerals and grey wheels, so everything changed colour in a single frame.
+SWEEP_SETTLE = 0.45
+SWEEP_STROKE = SWEEP_UP + SWEEP_DOWN
+SWEEP_TOTAL = SWEEP_STROKE + SWEEP_SETTLE
 
 
 # The standing state of sunnypilot's green-light / lead-departure watch, as one dot under the
@@ -145,6 +152,10 @@ SIGNAL_HOLD = 3.0               # green stays up this long after the chime, as t
 LIGHT_R = 21
 LIGHT_Y = 160                   # centre, down from the top of the rect
 LIGHT_DIM = 0.18                # grey, when there is nothing to watch
+# Only while it is red and waiting. Amber and green are momentary and read for themselves;
+# red is the one that sits there, and a bare dot does not say what it is doing.
+LIGHT_LABEL = "ARMED"
+LIGHT_LABEL_GAP = 10
 
 LABEL_SIZE = 18                 # the TRACTION caption
 LABEL_GAP = 12                  # clears a wheel turned to full lock, which reaches ~7px lower
@@ -171,7 +182,7 @@ BIAS_MAX_PEDAL = 0.05
 # of its centre, which still lands inside the 476 wide rect and above the label.
 WHEEL_W = 44
 WHEEL_H = 64
-WHEEL_GAP = 22
+WHEEL_GAP = 12
 WHEEL_Y = 40
 WHEEL_R = 10                    # corner radius
 WHEEL_SEGS = 3                  # segments per corner arc; 3 is already smooth at this size
@@ -181,14 +192,14 @@ WHEEL_SEGS = 3                  # segments per corner arc; 3 is already smooth a
 # dot's own fade - so it cannot pop part way through, the same trick the screen fade uses.
 WHEEL_W_BIG = 58
 WHEEL_H_BIG = 94
-WHEEL_GAP_BIG = 28
+WHEEL_GAP_BIG = 16
 WHEEL_Y_BIG = 44
 GROW_RC = 0.22                  # seconds
 GROW_INSET = 10                 # pull the pair in as it grows, so the big size still fits
 
 # The arrows ease in rather than snapping on, and drift the way they are pointing.
 ARROW_RC = 0.10
-ARROW_DRIFT = 3.5               # px of travel
+ARROW_DRIFT = 7.0               # px of travel, scaled with the arrow
 ARROW_DRIFT_HZ = 1.4
 
 # A change of gear kicks the numeral and settles, so a shift registers even in peripheral vision.
@@ -512,9 +523,12 @@ class ManualGauge:
     rl.draw_rectangle_rec(rect, _with_alpha(COL_BLACK, SCRIM_ALPHA * fade))
 
     sweep = self._sweep_phase()
-    if sweep is not None:
+    if sweep is not None and sweep < SWEEP_STROKE:
       self._render_sweep(rect, sweep, fade)
       return
+    # 0 the instant the stroke ends, 1 once the gauge is fully live. Everything below reads
+    # its colour through this, so the sweep dissolves into the real values instead of cutting.
+    settle = 1.0 if sweep is None else (sweep - SWEEP_STROKE) / SWEEP_SETTLE
 
     rpm = max(0.0, self._rpm_filter.x)
     in_gear = 1 <= self._gear <= 6
@@ -541,8 +555,8 @@ class ManualGauge:
     bar_w = rect.width - 2 * MARGIN_X
     bar_x = rect.x + MARGIN_X
     bar_y = rect.y + rect.height - BAR_BOTTOM - BAR_H
-    self._draw_bar(bar_x, bar_y, bar_w, min(1.0, rpm / REDLINE_RPM),
-                   _zone_color(rpm), alpha, fade)
+    self._draw_bar(bar_x, bar_y, bar_w, min(1.0, rpm / REDLINE_RPM) * settle,
+                   _lerp_color(COL_OK, _zone_color(rpm), settle), alpha, fade)
 
     # gear numeral, left, big, taking the bar's colour as the revs climb
     label = _gear_label(self._gear)
@@ -550,12 +564,13 @@ class ManualGauge:
     txt = measure_text_cached(self._font_bold, label, size)
     pos = rl.Vector2(rect.x + GEAR_X, bar_y - GEAR_GAP - txt.y)
     rl.draw_text_ex(self._font_bold, label, pos, size, 0,
-                    _with_alpha(_gear_color(rpm, in_gear), alpha))
+                    _with_alpha(_lerp_color(COL_OK, _gear_color(rpm, in_gear), settle), alpha))
 
-    self._draw_traction(rect, fade)
-    self._draw_signal(rect, fade)
+    self._draw_traction(rect, fade, settle)
+    self._draw_signal(rect, fade, settle)
 
-    hx, hy = pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2
+    hx = pos.x + txt.x + HINT_GAP + HINT_SIZE / 2.0
+    hy = pos.y + txt.y / 2
     drift = ARROW_DRIFT * (0.5 + 0.5 * math.sin(rl.get_time() * 2 * math.pi * ARROW_DRIFT_HZ))
     if self._arrow_up.x > 0.004:
       # takes the bar's colour and its swell/blink, since it says the same thing
@@ -602,7 +617,8 @@ class ManualGauge:
     txt = measure_text_cached(self._font_bold, label, GEAR_SIZE)
     pos = rl.Vector2(rect.x + GEAR_X, bar_y - GEAR_GAP - txt.y)
     rl.draw_text_ex(self._font_bold, label, pos, GEAR_SIZE, 0, _with_alpha(colour, alpha))
-    self._draw_arrow(pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2, up, colour, alpha)
+    self._draw_arrow(pos.x + txt.x + HINT_GAP + HINT_SIZE / 2.0, pos.y + txt.y / 2,
+                     up, colour, alpha)
 
     # The wheels, the caption and the watch dot take the sweep's colour too, so one pass
     # proves every element on this screen is really being drawn AND that each can reach every
@@ -634,7 +650,7 @@ class ManualGauge:
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, fill_w, BAR_H), 1.0, 12,
                               _with_alpha(colour, alpha))
 
-  def _draw_traction(self, rect: rl.Rectangle, fade: float) -> None:
+  def _draw_traction(self, rect: rl.Rectangle, fade: float, settle: float = 1.0) -> None:
     """The two front wheels, top right against the margin. Green while they track the undriven
     rears, amber or red as they break away, grey when we are too slow for the measurement to
     mean anything."""
@@ -658,6 +674,9 @@ class ManualGauge:
           lit = int(rl.get_time() * SLIP_BLINK_HZ * 2) % 2 == 0
           a *= 1.0 if lit else SLIP_BLINK_LOW
       cx = x0 + i * (w + gap) + w / 2.0
+      # out of the sweep the wheels are green at full strength; ease into whatever they are
+      colour = _lerp_color(COL_OK, colour, settle)
+      a = FG_ALPHA * fade + (a - FG_ALPHA * fade) * settle
       _fill_poly(_wheel_poly(cx, cy, w, h), colour, a)
 
     label = "TRACTION"
@@ -666,7 +685,7 @@ class ManualGauge:
                     rl.Vector2(right - tl.x, rect.y + wy + h + LABEL_GAP),
                     LABEL_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.7 * fade))
 
-  def _draw_signal(self, rect: rl.Rectangle, fade: float) -> None:
+  def _draw_signal(self, rect: rl.Rectangle, fade: float, settle: float = 1.0) -> None:
     """One dot under the wheels, shrinking away as they grow into its space. Grey when there is
     nothing to watch, so it is never claiming to know something it does not."""
     colour, a = {
@@ -674,13 +693,22 @@ class ManualGauge:
       SIGNAL_SOON: (COL_AMBER, FG_ALPHA),
       SIGNAL_GO: (COL_OK, FG_ALPHA),
     }.get(self._signal, (COL_WHITE, LIGHT_DIM))
+    colour = _lerp_color(COL_OK, colour, settle)
+    a = FG_ALPHA + (a - FG_ALPHA) * settle
     shrink = 1.0 - self._grow_filter.x
     a *= shrink
     if a * fade < 0.004:
       return
     r = LIGHT_R * (0.4 + 0.6 * shrink)
     cx = rect.x + rect.width - MARGIN_X - LIGHT_R
-    rl.draw_circle(int(cx), int(rect.y + LIGHT_Y), r, _with_alpha(colour, a * fade))
+    cy = rect.y + LIGHT_Y
+    rl.draw_circle(int(cx), int(cy), r, _with_alpha(colour, a * fade))
+
+    if self._signal == SIGNAL_WAIT:
+      tv = measure_text_cached(self._font_semi, LIGHT_LABEL, LABEL_SIZE)
+      rl.draw_text_ex(self._font_semi, LIGHT_LABEL,
+                      rl.Vector2(cx - LIGHT_R - LIGHT_LABEL_GAP - tv.x, cy - tv.y / 2.0),
+                      LABEL_SIZE, 0, _with_alpha(colour, a * fade * 0.85))
 
   def _draw_edge_glow(self, rect: rl.Rectangle, colour: rl.Color, alpha: float) -> None:
     """Glow in from all four edges rather than washing the whole view. Corners get both passes,
