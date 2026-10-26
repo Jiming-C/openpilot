@@ -112,7 +112,7 @@ SWEEP_TOTAL = SWEEP_UP + SWEEP_DOWN
 
 
 LABEL_SIZE = 18                 # the TRACTION caption
-LABEL_GAP = 2
+LABEL_GAP = 12                  # clears a wheel turned to full lock, which reaches ~7px lower
 
 # Front wheelspin. The Si is FWD, so the undriven rear pair is a true ground-speed reference.
 # Cornering has to be taken out first: corr(steeringAngleDeg, FL-FR) measured -0.976 in logs,
@@ -130,32 +130,21 @@ BIAS_MIN_SPEED = 8.0            # m/s
 BIAS_MAX_STEER = 5.0            # deg
 BIAS_MAX_PEDAL = 0.05
 
-# A plain top-down car in the top right, right aligned to the margin. The body is an outline for
-# context only; the blocks are the wheels, straddling its edges. The fronts carry the slip
-# colour. The rears are the reference the fronts are measured against, so they stay a flat dim -
-# they have nothing of their own to report, and showing them as live would be a lie.
-CAR_W = 72                      # body, not counting the wheels straddling its edges
-CAR_H = 132
-CAR_Y = 36                      # body top, down from the top of the rect
-CAR_LINE = 2
-CAR_ALPHA = 0.22
-WHEEL_W = 20
-WHEEL_H = 36
-WHEEL_INSET = 19                # wheel centre, in from each end of the body
+# Just the two front wheels, top right against the margin. The rears are the reference these are
+# measured against, so they have nothing of their own to report and are not drawn at all.
+# Sized for the worst case: at full lock a wheel's corners swing out to about 36px either side
+# of its centre, which still lands inside the 476 wide rect and above the label.
+WHEEL_W = 44
+WHEEL_H = 64
+WHEEL_GAP = 22
+WHEEL_Y = 40
 
-# Outer shape only, traced off a top-down photo of the FE1 and cut down to the few points that
-# still read as this car at 72x132: distance down from the nose, then half-width, both as a
-# fraction. Mirrored for the other side, so it is symmetric by construction. The nose tapers,
-# the tail stays blunt - that is most of what tells you which way the car is pointing.
-_CAR_HALF = ((0.00, 0.26), (0.03, 0.36), (0.07, 0.43), (0.13, 0.47), (0.22, 0.495),
-             (0.35, 0.50), (0.50, 0.50), (0.65, 0.498), (0.78, 0.49), (0.88, 0.47),
-             (0.94, 0.44), (0.98, 0.40), (1.00, 0.36))
-
-# The front wheels turn by the real road-wheel angle: steering wheel degrees over the rack
-# ratio. At a normal 90 deg of lock that is about 6 deg, which is genuinely what the tyres do -
-# it is not exaggerated to make the animation louder, because the number beside it has to stay
-# true. Full lock is around 35 deg and very obvious.
-STEER_SIZE = 30                 # the degree readout, centred inside the body
+# They turn by the real road-wheel angle: steering wheel degrees over the rack ratio. At a
+# normal 90 deg of lock that is about 6 deg, which is genuinely what the tyres do - it is not
+# exaggerated to make the animation louder, because the number beside it has to stay true.
+# Full lock is around 35 deg and very obvious.
+STEER_SIZE = 44                 # the degree readout, left of the wheels and centred on them
+STEER_GAP = 16                  # between that number and the left wheel
 STEER_DEADBAND = 0.5            # road-wheel deg, below which it reads a flat 0
 
 COL_OK = rl.Color(74, 222, 128, 255)
@@ -244,16 +233,6 @@ def _fill_quad(corners, colour: rl.Color, alpha: float) -> None:
   v = [rl.Vector2(x, y) for x, y in p]
   rl.draw_triangle(v[0], v[1], v[2], c)
   rl.draw_triangle(v[0], v[2], v[3], c)
-
-
-def _car_outline() -> tuple[tuple[float, float], ...]:
-  """The closed outer shape, as fractions of CAR_W x CAR_H from the body's top-left."""
-  right = [(0.5 + hw, y) for y, hw in _CAR_HALF]
-  left = [(0.5 - hw, y) for y, hw in reversed(_CAR_HALF)]
-  return tuple(right + left)
-
-
-CAR_OUTLINE = _car_outline()
 
 
 def _with_alpha(colour: rl.Color, alpha: float) -> rl.Color:
@@ -496,33 +475,20 @@ class ManualGauge:
                               _with_alpha(colour, alpha))
 
   def _draw_traction(self, rect: rl.Rectangle, fade: float) -> None:
-    """A top-down car, top right against the margin. The front wheels are green while they track
-    the undriven rears, amber or red as they break away, and grey when we are too slow for the
-    measurement to mean anything. The rears are that reference, so they stay dim."""
+    """The two front wheels, top right against the margin. Green while they track the undriven
+    rears, amber or red as they break away, grey when we are too slow for the measurement to
+    mean anything - and turned to the angle the tyres are really at."""
     right = rect.x + rect.width - MARGIN_X
-    bx = right - CAR_W - WHEEL_W / 2.0
-    by = rect.y + CAR_Y
-
-    # the outer shape, as a closed run of segments
-    line_c = _with_alpha(COL_WHITE, CAR_ALPHA * fade)
-    pts = [rl.Vector2(bx + fx * CAR_W, by + fy * CAR_H) for fx, fy in CAR_OUTLINE]
-    for i, a in enumerate(pts):
-      rl.draw_line_ex(a, pts[(i + 1) % len(pts)], CAR_LINE, line_c)
+    x0 = right - (2 * WHEEL_W + WHEEL_GAP)
+    cy = rect.y + WHEEL_Y + WHEEL_H / 2.0
 
     # positive steeringAngleDeg is a LEFT turn, and screen y runs down, so the rotation that
     # swings the top of the wheel to the left is the negative one
     turn = -math.radians(self._road_wheel_deg)
+    hw, hh = WHEEL_W / 2.0, WHEEL_H / 2.0
+    ca, sa = math.cos(turn), math.sin(turn)
 
-    def wheel(cx: float, cy: float, colour: rl.Color, a: float, angle: float = 0.0) -> None:
-      hw, hh = WHEEL_W / 2.0, WHEEL_H / 2.0
-      ca, sa = math.cos(angle), math.sin(angle)
-      corners = [(cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
-                 for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))]
-      _fill_quad(corners, colour, a)
-
-    # fronts: the measurement, and the only ones that steer
-    front_y = by + WHEEL_INSET
-    for cx, slip in ((bx, self._slip_fl), (bx + CAR_W, self._slip_fr)):
+    for i, slip in enumerate((self._slip_fl, self._slip_fr)):
       if slip is None:
         colour, a = COL_WHITE, TRACK_ALPHA * fade
       else:
@@ -532,25 +498,22 @@ class ManualGauge:
           # blink the wheel that is actually spinning, not the pair
           lit = int(rl.get_time() * SLIP_BLINK_HZ * 2) % 2 == 0
           a *= 1.0 if lit else SLIP_BLINK_LOW
-      wheel(cx, front_y, colour, a, turn)
+      cx = x0 + i * (WHEEL_W + WHEEL_GAP) + hw
+      _fill_quad([(cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
+                  for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))], colour, a)
 
-    # rears: the reference, and decoration. Flat dim, never coloured, never steered.
-    rear_y = by + CAR_H - WHEEL_INSET
-    for cx in (bx, bx + CAR_W):
-      wheel(cx, rear_y, COL_WHITE, TRACK_ALPHA * fade)
-
-    # the angle the fronts are actually at, inside the body so it belongs to the picture
+    # the angle they are actually at, beside the wheels it describes
     deg = self._road_wheel_deg
     txt = f"{0 if abs(deg) < STEER_DEADBAND else round(abs(deg))}°"
     tv = measure_text_cached(self._font_bold, txt, STEER_SIZE)
     rl.draw_text_ex(self._font_bold, txt,
-                    rl.Vector2(bx + (CAR_W - tv.x) / 2.0, by + (CAR_H - tv.y) / 2.0),
+                    rl.Vector2(x0 - STEER_GAP - tv.x, cy - tv.y / 2.0),
                     STEER_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.75 * fade))
 
     label = "TRACTION"
     tl = measure_text_cached(self._font_semi, label, LABEL_SIZE)
     rl.draw_text_ex(self._font_semi, label,
-                    rl.Vector2(right - tl.x, by + CAR_H + LABEL_GAP),
+                    rl.Vector2(right - tl.x, rect.y + WHEEL_Y + WHEEL_H + LABEL_GAP),
                     LABEL_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.7 * fade))
 
   def _draw_edge_glow(self, rect: rl.Rectangle, colour: rl.Color, alpha: float) -> None:
