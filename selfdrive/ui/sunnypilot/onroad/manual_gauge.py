@@ -65,10 +65,28 @@ GEAR_RATIOS = {1: 215.0, 2: 122.7, 3: 80.1, 4: 60.2, 5: 48.8, 6: 40.3}   # rpm p
 RATIO_LOW_TOL = 0.03
 RATIO_MIN_MPH = 12.0
 
+# The ratio check cannot catch the worst case, because GEAR_MT picks whichever gear fits: at
+# 21 mph idle is almost exactly what 6th demands, so it sits on "6" for as long as you coast
+# there - 23s of one 11 min drive. And with the clutch in it has nothing to derive from at all,
+# so as the engine decays to idle it sweeps 4th, 5th, 6th in turn. That sweep is the numeral
+# climbing on its own.
+#
+# Requiring a gear to arrive out of a clutch press does NOT fix this. Measured over 10.9 min it
+# removed 0.0s of the 33.6s where a gear was shown with the engine plainly at idle, because the
+# phantom gears arrive through the clutch too. An rpm floor removes 82% of it.
+#
+# On the throttle you must be in gear whatever the revs, so the floor only applies off-throttle,
+# and only once moving fast enough that idle cannot be driving anything.
+IDLE_FLOOR = 1000.0             # rpm
+IDLE_FLOOR_MIN_MPH = 12.0
+IDLE_FLOOR_MAX_PEDAL = 0.02
+
 # GEAR_MT also reads 0 for the whole time the clutch is down, so every shift would flash N
 # between gears. Hold the gear we were in for a moment: a shift is quicker than this, sitting
 # in neutral is not, so a real neutral still falls through to N.
-CLUTCH_HOLD = 1.2               # seconds
+CLUTCH_HOLD = 2.0               # seconds. Measured over 93 clutch events: the clutch is down
+                                # 1.29s on an upshift and 1.44s on a downshift, so the old 1.2
+                                # expired mid-shift on more than half of them and flashed N.
 
 GEAR_CLUTCH = 0
 GEAR_REVERSE = 14
@@ -183,6 +201,16 @@ def _ratio_ok(gear: int, rpm: float, v_ego: float) -> bool:
   if mph <= RATIO_MIN_MPH:
     return True
   return rpm >= GEAR_RATIOS[gear] * mph * (1.0 - RATIO_LOW_TOL)
+
+
+def _engine_driving(rpm: float, v_ego: float, pedal: float) -> bool:
+  """Is the engine connected to the wheels at all? Sitting at idle while the car is moving at
+  speed it is not, whatever gear GEAR_MT happens to name."""
+  if pedal > IDLE_FLOOR_MAX_PEDAL:
+    return True
+  if v_ego * 2.23694 <= IDLE_FLOOR_MIN_MPH:
+    return True
+  return rpm >= IDLE_FLOOR
 
 
 def _gear_label(gear: int) -> str:
@@ -323,7 +351,9 @@ class ManualGauge:
     raw = int(cs_sp.gearMt)
     rpm_now = max(0.0, float(cs_sp.engineRpm))
     now = rl.get_time()
-    if 1 <= raw <= 6 and v_ego >= MIN_TRUST_SPEED and _ratio_ok(raw, rpm_now, v_ego):
+    driving = _engine_driving(rpm_now, v_ego, cs_sp.pedalGas)
+    if (1 <= raw <= 6 and v_ego >= MIN_TRUST_SPEED and driving
+            and _ratio_ok(raw, rpm_now, v_ego)):
       # a gear we can believe: moving, the box reports one, and the engine agrees
       self._held_gear, self._clutch_since = raw, 0.0
       gear = raw
@@ -334,7 +364,10 @@ class ManualGauge:
       # clutch down, mid-shift, truly neutral, or stopped - where GEAR_MT holds a stale gear
       if self._clutch_since == 0.0:
         self._clutch_since = now
-      holding = (self._held_gear != 0 and v_ego >= MIN_TRUST_SPEED
+      # hold through a shift, but let go the moment the engine drops to idle at speed: during
+      # a real shift the revs stay well up (1300-1800 at 27 mph), while coasting in neutral
+      # they settle at idle and stay there. That is what tells the two apart.
+      holding = (self._held_gear != 0 and v_ego >= MIN_TRUST_SPEED and driving
                  and now - self._clutch_since < CLUTCH_HOLD)
       if holding:
         gear = self._held_gear
