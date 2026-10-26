@@ -33,13 +33,20 @@ BLEND_START_RPM = 3600.0        # starts easing green -> amber here, still stead
 AMBER_RPM = 4800.0              # fully amber, and the pulse starts: this is the sudden one
 RED_RPM = 5900.0                # fully red, hard flash, edges strobe
 
-# Idle measured 1003 rpm in the logs, so a 900 line sits below idle and could only ever fire on
-# the verge of a stall. 1200 in 3rd is ~15 mph, which is genuinely a gear too tall. Light
-# throttle counts: lugging usually happens while feeding it in, not at 15% down.
-LUG_RPM = 1200.0
-LUG_PEDAL = 0.08
+# Lugging is rpm too low for the gear you are in, so the line has to move with the gear: 900 rpm
+# is 7 mph in 2nd, which is just pulling away, but 22 mph in 6th, which is already well into it.
+LUG_FLOOR = {2: 900.0, 3: 1000.0, 4: 1100.0, 5: 1150.0, 6: 1200.0}   # rpm, by gear
+# Light throttle is the whole point. Measured across 12.8 min of logged driving, the most
+# throttle present at ANY low-rpm-in-gear moment was 0.024 - feeding it in gently at low revs is
+# what lugging IS, so the old 0.08 gate could not fire once in that entire drive. This only has
+# to clear pure coasting, where pedalGas sits at 0.000.
+LUG_PEDAL = 0.02
 LUG_MIN_SPEED = 2.2             # m/s, ~5 mph
-LUG_MIN_GEAR = 3                # below 3rd, low revs are just pulling away
+
+# The bar already shouts from AMBER_RPM up, so the arrow only adds something when you are
+# actually asking for power. Without this it fired for 3.1 s while coasting down from 66 mph
+# off the throttle, which is the opposite of advice.
+UPSHIFT_MIN_PEDAL = 0.15
 
 # GEAR_MT is derived from engine speed against wheel speed, so with the car stopped there is
 # nothing to derive it from and it holds whatever it last saw. Don't believe it below this.
@@ -105,6 +112,14 @@ EDGE_AMBER_LOW = 0.15           # the amber glow breathes between these
 EDGE_AMBER_HIGH = 0.45
 HINT_BLINK_HZ = 2.0             # the downshift arrow, which has to carry itself
 HINT_BLINK_LOW = 0.2
+
+# One-shot cluster sweep the first time the gauge comes up: the bar runs to redline and back,
+# each half carrying one of the arrows. It reads like an ignition self-test because it is one -
+# it runs the same bar, numeral and arrow code at the same coordinates as the live gauge, so a
+# glance at startup confirms all of it is really being drawn. Once per boot, not per disengage.
+SWEEP_UP = 0.6                  # seconds, bar 0 -> redline
+SWEEP_DOWN = 0.6                # and back down
+SWEEP_TOTAL = SWEEP_UP + SWEEP_DOWN
 
 
 TEMP_SIZE = 48
@@ -232,6 +247,8 @@ class ManualGauge:
     self._lugging = False
     self._upshift = False
     self._revmatch: tuple[int, float] | None = None
+    self._sweep_start: float | None = None
+    self._sweep_done = False
 
   # ---------------------------------------------------------------- state
 
@@ -273,6 +290,8 @@ class ManualGauge:
     visible = (ui_state.status == UIStatus.DISENGAGED and self._is_manual
                and not alert_showing and gear != GEAR_REVERSE)
     self._fade_filter.update(1.0 if visible else 0.0)
+    if visible and not self._sweep_done and self._sweep_start is None:
+      self._sweep_start = now
     if not visible:
       return
 
@@ -280,12 +299,17 @@ class ManualGauge:
 
     self._update_slip(cs, cs_sp)
 
-    self._lugging = (LUG_MIN_GEAR <= gear <= 6 and
-                     rpm < LUG_RPM and
+    # rpm under this gear's floor, with some throttle in it, moving, and not braking - slowing
+    # to a stop in gear drops below the floor every time and is not lugging.
+    floor = LUG_FLOOR.get(gear)
+    self._lugging = (floor is not None and
+                     rpm < floor and
                      cs_sp.pedalGas > LUG_PEDAL and
-                     v_ego > LUG_MIN_SPEED)
-    # from the amber stage on; nothing to go up to out of 6th
-    self._upshift = 1 <= gear < 6 and rpm >= AMBER_RPM
+                     v_ego > LUG_MIN_SPEED and
+                     not cs.brakePressed)
+    # from the amber stage on and only under power; nothing to go up to out of 6th
+    self._upshift = (1 <= gear < 6 and rpm >= AMBER_RPM
+                     and cs_sp.pedalGas > UPSHIFT_MIN_PEDAL)
 
     mph = v_ego * 2.23694
     self._revmatch = None
@@ -337,6 +361,11 @@ class ManualGauge:
     # AFTER this widget to keep them out from under the scrim.
     rl.draw_rectangle_rec(rect, _with_alpha(COL_BLACK, SCRIM_ALPHA * fade))
 
+    sweep = self._sweep_phase()
+    if sweep is not None:
+      self._render_sweep(rect, sweep, fade)
+      return
+
     rpm = max(0.0, self._rpm_filter.x)
     in_gear = 1 <= self._gear <= 6
 
@@ -384,6 +413,42 @@ class ManualGauge:
       lit = int(rl.get_time() * HINT_BLINK_HZ * 2) % 2 == 0
       self._draw_arrow(hx, hy, False, COL_AMBER,
                        FG_ALPHA * (1.0 if lit else HINT_BLINK_LOW) * fade)
+
+  def _sweep_phase(self) -> float | None:
+    """Seconds into the one-shot startup sweep, or None once it has run."""
+    if self._sweep_done or self._sweep_start is None:
+      return None
+    t = rl.get_time() - self._sweep_start
+    if t >= SWEEP_TOTAL:
+      self._sweep_done = True
+      return None
+    return t
+
+  def _render_sweep(self, rect: rl.Rectangle, t: float, fade: float) -> None:
+    """The startup sweep: bar up to redline carrying the up arrow, back down carrying the down
+    arrow. Nothing here reads the car - it runs the live draw calls at the live coordinates so
+    that one glance at startup proves the bar, the numeral and both triangles are drawn."""
+    if t < SWEEP_UP:
+      frac, up = t / SWEEP_UP, True
+    else:
+      frac, up = 1.0 - (t - SWEEP_UP) / SWEEP_DOWN, False
+    frac = min(1.0, max(0.0, frac))
+    colour = _zone_color(frac * REDLINE_RPM)
+    alpha = FG_ALPHA * fade
+
+    # steady, not blinking: this is a sweep, not an alarm
+    if frac * REDLINE_RPM >= AMBER_RPM:
+      self._draw_edge_glow(rect, colour, EDGE_AMBER_HIGH * fade)
+
+    bar_y = rect.y + rect.height - BAR_BOTTOM - BAR_H
+    self._draw_bar(rect.x + MARGIN_X, bar_y, rect.width - 2 * MARGIN_X, frac,
+                   colour, alpha, fade)
+
+    label = _gear_label(self._gear)
+    txt = measure_text_cached(self._font_bold, label, GEAR_SIZE)
+    pos = rl.Vector2(rect.x + GEAR_X, bar_y - GEAR_GAP - txt.y)
+    rl.draw_text_ex(self._font_bold, label, pos, GEAR_SIZE, 0, _with_alpha(colour, alpha))
+    self._draw_arrow(pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2, up, colour, alpha)
 
   def _draw_bar(self, x: float, y: float, w: float, frac: float,
                 colour: rl.Color, alpha: float, fade: float) -> None:
@@ -452,17 +517,20 @@ class ManualGauge:
                   colour: rl.Color, alpha: float) -> None:
     """Shift arrow, drawn rather than typed: the bundled font has no arrow glyph.
 
-    raylib backface-culls draw_triangle, so these have to wind the same way as the triangles
-    known to render (star_icon.py): positive signed area in screen coords, which are y-down.
-    Wound the other way nothing is drawn at all, silently - which is what happened here.
+    raylib backface-culls draw_triangle, and wound the wrong way nothing is drawn at all,
+    silently. Screen coords are y-down, so front-facing comes out NEGATIVE under the shoelace
+    formula - which is what both triangles in this tree that provably render measure:
+    star_icon.py's fill is -0.147 and the mici lead chevron is -1.250. Match that sign, and
+    check it against those two rather than against an assumption. Getting this backwards is
+    exactly why these never appeared on the car.
     """
     h = HINT_SIZE
     c = _with_alpha(colour, alpha)
     if up:
-      rl.draw_triangle(rl.Vector2(cx, cy - h / 2),
-                       rl.Vector2(cx + h / 2, cy + h / 3),
+      rl.draw_triangle(rl.Vector2(cx + h / 2, cy + h / 3),
+                       rl.Vector2(cx, cy - h / 2),
                        rl.Vector2(cx - h / 2, cy + h / 3), c)
     else:
-      rl.draw_triangle(rl.Vector2(cx - h / 2, cy - h / 3),
-                       rl.Vector2(cx + h / 2, cy - h / 3),
+      rl.draw_triangle(rl.Vector2(cx + h / 2, cy - h / 3),
+                       rl.Vector2(cx - h / 2, cy - h / 3),
                        rl.Vector2(cx, cy + h / 2), c)
