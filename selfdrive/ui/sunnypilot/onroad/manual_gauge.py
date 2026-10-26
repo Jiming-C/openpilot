@@ -111,6 +111,23 @@ SWEEP_DOWN = 0.6                # and back down
 SWEEP_TOTAL = SWEEP_UP + SWEEP_DOWN
 
 
+# The standing state of sunnypilot's green-light / lead-departure watch, as one dot under the
+# wheels. It does NOT read the traffic light: nothing on the car or in the driving model reports
+# a lamp colour. It mirrors what sunnypilot/selfdrive/controls/lib/e2e_alerts_helper.py is doing,
+# which is watching the road ahead - red while stopped and still blocked, amber the moment the
+# way opens, green once the chime has fired. At a light those line up with the light, but what
+# is being measured is the path, not the lamp. Thresholds below are that file's, kept in step.
+SIGNAL_OFF, SIGNAL_WAIT, SIGNAL_SOON, SIGNAL_GO = 0, 1, 2, 3
+GREEN_LIGHT_X = 30.0            # metres of clear path the model has to predict
+E2E_SETTLE = 2.0                # seconds stopped before the watch arms
+LEAD_NEAR_M = 8.0               # a lead this close is the thing being waited on
+LEAD_DEPART_M = 1.0             # and this is how far it has to pull away
+SIGNAL_HOLD = 3.0               # green stays up this long after the chime, as the alert does
+
+LIGHT_R = 21
+LIGHT_Y = 160                   # centre, down from the top of the rect
+LIGHT_DIM = 0.18                # grey, when there is nothing to watch
+
 LABEL_SIZE = 18                 # the TRACTION caption
 LABEL_GAP = 12                  # clears a wheel turned to full lock, which reaches ~7px lower
 
@@ -275,6 +292,10 @@ class ManualGauge:
     self._lugging = False
     self._upshift = False
     self._road_wheel_deg = 0.0
+    self._signal = SIGNAL_OFF
+    self._last_moving = 0.0
+    self._fired_at = -SIGNAL_HOLD
+    self._lead_min = -1.0
     self._sweep_start: float | None = None
     self._sweep_done = False
 
@@ -342,6 +363,44 @@ class ManualGauge:
     cp = ui_state.CP
     steer_ratio = cp.steerRatio if cp and cp.steerRatio > 1.0 else 15.38
     self._road_wheel_deg = cs.steeringAngleDeg / steer_ratio
+
+    self._update_signal(cs, now)
+
+  def _update_signal(self, cs, now: float) -> None:
+    """Which colour the watch dot is showing. See the SIGNAL_ notes above: this follows the
+    road ahead, not a traffic light, and the fired state comes from the planner rather than
+    being recomputed here, so the dot and the chime can never disagree."""
+    sm = ui_state.sm
+    alerts = sm['longitudinalPlanSP'].e2eAlerts
+    if alerts.greenLightAlert or alerts.leadDepartAlert:
+      self._fired_at = now
+
+    moving = not cs.standstill and cs.vEgo > 0.1
+    if moving:
+      self._last_moving = now
+
+    # this widget only draws while disengaged, so the helper's `not CC.enabled` already holds
+    armed = not moving and not cs.gasPressed and now - self._last_moving > E2E_SETTLE
+    if now - self._fired_at < SIGNAL_HOLD:
+      self._signal = SIGNAL_GO
+      return
+    if not armed:
+      self._lead_min = -1.0
+      self._signal = SIGNAL_OFF
+      return
+
+    lead = sm['radarState'].leadOne
+    if lead.status and lead.dRel < LEAD_NEAR_M:
+      # waiting on the car in front: remember how close it got, then watch it pull away
+      self._lead_min = lead.dRel if self._lead_min < 0 else min(self._lead_min, lead.dRel)
+      opening = lead.dRel - self._lead_min > LEAD_DEPART_M
+    else:
+      # nothing in front: the model's own horizon is what says the way is clear
+      self._lead_min = -1.0
+      x = sm['modelV2'].position.x
+      opening = len(x) > 0 and x[len(x) - 1] > GREEN_LIGHT_X
+
+    self._signal = SIGNAL_SOON if opening else SIGNAL_WAIT
 
   def _update_slip(self, cs, cs_sp) -> None:
     """Front wheelspin against the undriven rears, with the cornering geometry removed."""
@@ -431,6 +490,7 @@ class ManualGauge:
                     _with_alpha(_gear_color(rpm, in_gear), alpha))
 
     self._draw_traction(rect, fade)
+    self._draw_signal(rect, fade)
 
     hx, hy = pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2
     if self._upshift:
@@ -520,6 +580,17 @@ class ManualGauge:
     rl.draw_text_ex(self._font_semi, label,
                     rl.Vector2(right - tl.x, rect.y + WHEEL_Y + WHEEL_H + LABEL_GAP),
                     LABEL_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.7 * fade))
+
+  def _draw_signal(self, rect: rl.Rectangle, fade: float) -> None:
+    """One dot under the wheels. Grey when there is nothing to watch, so it is never claiming
+    to know something it does not."""
+    colour, a = {
+      SIGNAL_WAIT: (COL_RED, FG_ALPHA),
+      SIGNAL_SOON: (COL_AMBER, FG_ALPHA),
+      SIGNAL_GO: (COL_OK, FG_ALPHA),
+    }.get(self._signal, (COL_WHITE, LIGHT_DIM))
+    cx = rect.x + rect.width - MARGIN_X - LIGHT_R
+    rl.draw_circle(int(cx), int(rect.y + LIGHT_Y), LIGHT_R, _with_alpha(colour, a * fade))
 
   def _draw_edge_glow(self, rect: rl.Rectangle, colour: rl.Color, alpha: float) -> None:
     """Glow in from all four edges rather than washing the whole view. Corners get both passes,
