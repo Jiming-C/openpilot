@@ -138,14 +138,14 @@ WHEEL_W = 44
 WHEEL_H = 64
 WHEEL_GAP = 22
 WHEEL_Y = 40
+WHEEL_R = 10                    # corner radius
+WHEEL_SEGS = 3                  # segments per corner arc; 3 is already smooth at this size
 
 # They turn by the real road-wheel angle: steering wheel degrees over the rack ratio. At a
-# normal 90 deg of lock that is about 6 deg, which is genuinely what the tyres do - it is not
-# exaggerated to make the animation louder, because the number beside it has to stay true.
-# Full lock is around 35 deg and very obvious.
-STEER_SIZE = 44                 # the degree readout, left of the wheels and centred on them
-STEER_GAP = 16                  # between that number and the left wheel
-STEER_DEADBAND = 0.5            # road-wheel deg, below which it reads a flat 0
+# normal 90 deg of lock that is about 6 deg, which is genuinely what the tyres do, and full
+# lock is around 35. It is not exaggerated to make the movement louder. There is no number
+# beside it - you are holding the steering wheel, so how much lock you have is the one thing
+# on this screen you already know, and the angle only duplicated what the shapes show.
 
 COL_OK = rl.Color(74, 222, 128, 255)
 COL_AMBER = rl.Color(251, 191, 36, 255)
@@ -221,18 +221,34 @@ def _gear_color(rpm: float, in_gear: bool) -> rl.Color:
   return _zone_color(rpm)
 
 
-def _fill_quad(corners, colour: rl.Color, alpha: float) -> None:
-  """A filled quad as two triangles. raylib backface-culls draw_triangle and front-facing is
-  negative signed area in y-down screen coords (see _draw_arrow), so rather than trust the
-  caller to hand the corners over the right way round, measure and flip if needed."""
-  p = list(corners)
-  area = sum(p[i][0] * p[(i + 1) % 4][1] - p[(i + 1) % 4][0] * p[i][1] for i in range(4))
+def _fill_poly(points, colour: rl.Color, alpha: float) -> None:
+  """A filled convex polygon, as a triangle fan. Same winding rule as the arrows: raylib culls
+  the wrong way round silently, and front-facing is negative signed area in y-down screen
+  coords - which is what the mici lead chevron, drawn the same way, measures. Rather than
+  trust the caller to build the loop the right way round, measure it and flip if needed."""
+  p = list(points)
+  n = len(p)
+  area = sum(p[i][0] * p[(i + 1) % n][1] - p[(i + 1) % n][0] * p[i][1] for i in range(n))
   if area > 0:
     p.reverse()
-  c = _with_alpha(colour, alpha)
-  v = [rl.Vector2(x, y) for x, y in p]
-  rl.draw_triangle(v[0], v[1], v[2], c)
-  rl.draw_triangle(v[0], v[2], v[3], c)
+  rl.draw_triangle_fan(p, len(p), _with_alpha(colour, alpha))
+
+
+def _wheel_poly(cx: float, cy: float, angle: float) -> list[tuple[float, float]]:
+  """A rounded rectangle the size of a wheel, rotated about its own centre. Built as a loop of
+  points rather than drawn as a rounded rect because raylib cannot rotate one."""
+  hw, hh = WHEEL_W / 2.0, WHEEL_H / 2.0
+  r = min(WHEEL_R, hw, hh)
+  ca, sa = math.cos(angle), math.sin(angle)
+  pts = []
+  # the four corner centres, each sweeping a quarter turn: top-right, then round
+  for sx, sy, a0 in ((1, -1, -math.pi / 2), (1, 1, 0.0), (-1, 1, math.pi / 2), (-1, -1, math.pi)):
+    ox, oy = sx * (hw - r), sy * (hh - r)
+    for k in range(WHEEL_SEGS + 1):
+      a = a0 + (math.pi / 2) * k / WHEEL_SEGS
+      dx, dy = ox + r * math.cos(a), oy + r * math.sin(a)
+      pts.append((cx + dx * ca - dy * sa, cy + dx * sa + dy * ca))
+  return pts
 
 
 def _with_alpha(colour: rl.Color, alpha: float) -> rl.Color:
@@ -485,8 +501,6 @@ class ManualGauge:
     # positive steeringAngleDeg is a LEFT turn, and screen y runs down, so the rotation that
     # swings the top of the wheel to the left is the negative one
     turn = -math.radians(self._road_wheel_deg)
-    hw, hh = WHEEL_W / 2.0, WHEEL_H / 2.0
-    ca, sa = math.cos(turn), math.sin(turn)
 
     for i, slip in enumerate((self._slip_fl, self._slip_fr)):
       if slip is None:
@@ -498,17 +512,8 @@ class ManualGauge:
           # blink the wheel that is actually spinning, not the pair
           lit = int(rl.get_time() * SLIP_BLINK_HZ * 2) % 2 == 0
           a *= 1.0 if lit else SLIP_BLINK_LOW
-      cx = x0 + i * (WHEEL_W + WHEEL_GAP) + hw
-      _fill_quad([(cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
-                  for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))], colour, a)
-
-    # the angle they are actually at, beside the wheels it describes
-    deg = self._road_wheel_deg
-    txt = f"{0 if abs(deg) < STEER_DEADBAND else round(abs(deg))}°"
-    tv = measure_text_cached(self._font_bold, txt, STEER_SIZE)
-    rl.draw_text_ex(self._font_bold, txt,
-                    rl.Vector2(x0 - STEER_GAP - tv.x, cy - tv.y / 2.0),
-                    STEER_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.75 * fade))
+      cx = x0 + i * (WHEEL_W + WHEEL_GAP) + WHEEL_W / 2.0
+      _fill_poly(_wheel_poly(cx, cy, turn), colour, a)
 
     label = "TRACTION"
     tl = measure_text_cached(self._font_semi, label, LABEL_SIZE)
