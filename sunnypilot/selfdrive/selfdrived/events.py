@@ -251,4 +251,22 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       AlertStatus.normal, AlertSize.none,
       Priority.MID, VisualAlert.none, AudibleAlertSP.greenLightChime, 3.),
   },
+
+  # The shift cue carries no text and no visual: the rev bar is already saying this, louder
+  # and sooner. LOW priority on purpose - a real warning must always talk over it.
+  EventNameSP.shiftBeep: {
+    ET.PERMANENT: Alert(
+      "",
+      "",
+      AlertStatus.normal, AlertSize.none,
+      Priority.LOW, VisualAlert.none, AudibleAlertSP.shiftBeep, 0.3),
+  },
+
+  EventNameSP.shiftHold: {
+    ET.PERMANENT: Alert(
+      "",
+      "",
+      AlertStatus.normal, AlertSize.none,
+      Priority.LOW, VisualAlert.none, AudibleAlertSP.shiftHold, 0.25),
+  },
 }

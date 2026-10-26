@@ -112,6 +112,9 @@ struct SelfdriveStateSP @0x81c2f05a394cf4af {
     promptSingleHigh @32;
 
     greenLightChime @33;
+
+    shiftBeep @34;
+    shiftHold @35;
   }
 }
 
@@ -345,6 +348,8 @@ struct OnroadEventSP @0xda96579883444c35 {
     speedLimitPending @22;
     e2eChime @23;
     greenLightChime @24;
+    shiftBeep @25;
+    shiftHold @26;
   }
 }
 

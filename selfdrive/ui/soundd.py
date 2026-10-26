@@ -49,6 +49,9 @@ sound_list_sp: dict[int, tuple[str, int | None, float]] = {
   AudibleAlertSP.promptSingleLow: ("prompt_single_low.wav", 1, MAX_VOLUME),
   AudibleAlertSP.promptSingleHigh: ("prompt_single_high.wav", 1, MAX_VOLUME),
   AudibleAlertSP.greenLightChime: ("green_light.wav", 1, MAX_VOLUME),
+  # one shot per rev threshold crossed; the redline tone loops until the revs drop
+  AudibleAlertSP.shiftBeep: ("shift_beep.wav", 1, MAX_VOLUME),
+  AudibleAlertSP.shiftHold: ("shift_hold.wav", None, MAX_VOLUME),
 }
 
 sound_list: dict[int, tuple[str, int | None, float]] = {
