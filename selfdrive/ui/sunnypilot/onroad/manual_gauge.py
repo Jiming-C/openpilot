@@ -45,6 +45,15 @@ LUG_MIN_GEAR = 3                # below 3rd, low revs are just pulling away
 # nothing to derive it from and it holds whatever it last saw. Don't believe it below this.
 MIN_TRUST_SPEED = 1.3           # m/s, ~3 mph
 
+# Coasting in neutral, GEAR_MT keeps naming whatever gear the road speed would suit, so the
+# numeral climbs through gears on its own. The tell is the engine: with the driveline
+# connected, rpm tracks road speed through a fixed ratio. Running SLOWER than the named gear
+# demands means it is not driving the wheels. Ratios are medians measured from logged driving,
+# all within 1% of the published ones. Only the low side is tested - rev-matching runs high.
+GEAR_RATIOS = {1: 215.0, 2: 122.7, 3: 80.1, 4: 60.2, 5: 48.8, 6: 40.3}   # rpm per mph
+RATIO_LOW_TOL = 0.04
+RATIO_MIN_MPH = 12.0
+
 # GEAR_MT also reads 0 for the whole time the clutch is down, so every shift would flash N
 # between gears. Hold the gear we were in for a moment: a shift is quicker than this, sitting
 # in neutral is not, so a real neutral still falls through to N.
@@ -82,19 +91,10 @@ EDGE_AMBER_HIGH = 0.45
 HINT_BLINK_HZ = 2.0             # the downshift arrow, which has to carry itself
 HINT_BLINK_LOW = 0.2
 
-# Coolant, decoded from 0x2FF - see the comment on COOLANT_TEMP in the Honda DBC. Colour runs
-# with temperature the way the rev bar runs with revs: blue while cold, white through the normal
-# band, red if it ever runs hot. The 1.5T sits around 90.
-COOL_MIN_C = 20.0               # bottom of the bar, and fully blue
-COOL_WARM_C = 70.0              # fully white from here: safe to wring out
-COOL_HOT_C = 100.0              # starts reddening
-COOL_MAX_C = 115.0              # top of the bar, and fully red
-COOL_NO_DATA_C = -35.0          # the signal decodes to -40 when the message is absent
 
 TEMP_SIZE = 48
 TEMP_LABEL_SIZE = 18
 TEMP_GAP = 2
-TEMP_TOP = 30                   # clears the rounded corner mask
 
 # Front wheelspin. The Si is FWD, so the undriven rear pair is a true ground-speed reference.
 # Cornering has to be taken out first: corr(steeringAngleDeg, FL-FR) measured -0.976 in logs,
@@ -112,24 +112,32 @@ BIAS_MIN_SPEED = 8.0            # m/s
 BIAS_MAX_STEER = 5.0            # deg
 BIAS_MAX_PEDAL = 0.05
 
-# The two front wheels sit tight together directly under the coolant readout, both right
-# aligned to the same edge. The rears are the reference, so they have no slip of their own to
+# The two front wheels sit tight together in the top right, right aligned to the margin. The rears are the reference, so they have no slip of their own to
 # show - RL vs RR imbalance would be measurable, but it is not worth two more blocks here.
 WHEEL_W = 34
 WHEEL_H = 46
 WHEEL_GAP = 12
-WHEEL_Y = 108
+WHEEL_Y = 56
 
 COL_OK = rl.Color(74, 222, 128, 255)
 COL_AMBER = rl.Color(251, 191, 36, 255)
 COL_RED = rl.Color(239, 68, 68, 255)
 COL_WHITE = rl.Color(255, 255, 255, 255)
 COL_BLACK = rl.Color(0, 0, 0, 255)
-COL_COLD = rl.Color(96, 165, 250, 255)   # same family as the green/amber/red
 
 FG_ALPHA = 0.95
 TRACK_ALPHA = 0.15
 
+
+
+def _ratio_ok(gear: int, rpm: float, v_ego: float) -> bool:
+  """Does engine speed agree that this gear is driving the wheels? Only the low side is
+  tested: coasting in neutral drops the engine to idle while the road speed stays up, whereas
+  rev-matching runs high and is still a real gear."""
+  mph = v_ego * 2.23694
+  if mph <= RATIO_MIN_MPH:
+    return True
+  return rpm >= GEAR_RATIOS[gear] * mph * (1.0 - RATIO_LOW_TOL)
 
 
 def _gear_label(gear: int) -> str:
@@ -164,7 +172,7 @@ def _zone_color(rpm: float) -> rl.Color:
 
 def _slip_color(mag: float) -> rl.Color:
   """Green through the noise floor, then eased to amber and on to red - same treatment as the
-  rev bar and the coolant, so the whole panel reads one way."""
+  rev bar, so the panel reads one way."""
   if mag <= SLIP_QUIET_KPH:
     return COL_OK
   if mag < SLIP_AMBER_KPH:
@@ -175,14 +183,6 @@ def _slip_color(mag: float) -> rl.Color:
                        (mag - SLIP_AMBER_KPH) / (SLIP_RED_KPH - SLIP_AMBER_KPH))
   return COL_RED
 
-
-def _coolant_color(c: float) -> rl.Color:
-  """Blue cold, white through the normal band, red hot - eased, not stepped."""
-  if c <= COOL_WARM_C:
-    return _lerp_color(COL_COLD, COL_WHITE, (c - COOL_MIN_C) / (COOL_WARM_C - COOL_MIN_C))
-  if c < COOL_HOT_C:
-    return COL_WHITE
-  return _lerp_color(COL_WHITE, COL_RED, (c - COOL_HOT_C) / (COOL_MAX_C - COOL_HOT_C))
 
 
 def _gear_color(rpm: float, in_gear: bool) -> rl.Color:
@@ -205,13 +205,13 @@ class ManualGauge:
     dt = 1 / gui_app.target_fps
     self._bias_fl = FirstOrderFilter(0.0, BIAS_RC, dt)
     self._bias_fr = FirstOrderFilter(0.0, BIAS_RC, dt)
-    self._rpm_filter = FirstOrderFilter(0.0, 0.12, 1 / gui_app.target_fps)
+    # 0.12 put a visible ~0.12s lag on the bar; 0.05 still smooths sensor jitter
+    self._rpm_filter = FirstOrderFilter(0.0, 0.05, 1 / gui_app.target_fps)
     self._fade_filter = FirstOrderFilter(0.0, 0.18, 1 / gui_app.target_fps)
 
     self._gear = GEAR_CLUTCH
     self._held_gear = 0         # last gear we actually believed, for the clutch hold
     self._clutch_since = 0.0
-    self._coolant = COOL_NO_DATA_C
     self._slip_fl: float | None = None
     self._slip_fr: float | None = None
     self._lugging = False
@@ -230,9 +230,10 @@ class ManualGauge:
     v_ego = cs.vEgo
 
     raw = int(cs_sp.gearMt)
+    rpm_now = max(0.0, float(cs_sp.engineRpm))
     now = rl.get_time()
-    if 1 <= raw <= 6 and v_ego >= MIN_TRUST_SPEED:
-      # a gear we can believe: moving, and the box is reporting one
+    if 1 <= raw <= 6 and v_ego >= MIN_TRUST_SPEED and _ratio_ok(raw, rpm_now, v_ego):
+      # a gear we can believe: moving, the box reports one, and the engine agrees
       self._held_gear, self._clutch_since = raw, 0.0
       gear = raw
     elif raw == GEAR_REVERSE:
@@ -261,7 +262,6 @@ class ManualGauge:
 
     rpm = self._rpm_filter.update(max(0.0, float(cs_sp.engineRpm)))
 
-    self._coolant = float(cs_sp.coolantTemp)
     self._update_slip(cs, cs_sp)
 
     self._lugging = (LUG_MIN_GEAR <= gear <= 6 and
@@ -350,7 +350,6 @@ class ManualGauge:
     rl.draw_text_ex(self._font_bold, label, pos, GEAR_SIZE, 0,
                     _with_alpha(_gear_color(rpm, in_gear), alpha))
 
-    self._draw_coolant(rect, FG_ALPHA * fade)
     self._draw_traction(rect, fade)
 
     hx, hy = pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2
@@ -375,29 +374,8 @@ class ManualGauge:
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, fill_w, BAR_H), 1.0, 12,
                               _with_alpha(colour, alpha))
 
-  def _draw_coolant(self, rect: rl.Rectangle, alpha: float) -> None:
-    """Just the number, top right, in Celsius. The colour does the work a bar would: blue while
-    it is too cold to wring out, red if it ever runs hot."""
-    if self._coolant <= COOL_NO_DATA_C:
-      return
-
-    colour = _coolant_color(self._coolant)
-    # the bundled Inter .fnt does carry U+00B0 (unlike the arrow glyphs), so the unit rides on
-    # the number and the label just says what it is
-    text = f"{self._coolant:.0f}\u00b0C"
-    label = "COOLANT"
-    right = rect.x + rect.width - MARGIN_X
-    top = rect.y + TEMP_TOP
-
-    tv = measure_text_cached(self._font_bold, text, TEMP_SIZE)
-    rl.draw_text_ex(self._font_bold, text, rl.Vector2(right - tv.x, top), TEMP_SIZE, 0,
-                    _with_alpha(colour, alpha))
-    tl = measure_text_cached(self._font_semi, label, TEMP_LABEL_SIZE)
-    rl.draw_text_ex(self._font_semi, label, rl.Vector2(right - tl.x, top + tv.y + TEMP_GAP),
-                    TEMP_LABEL_SIZE, 0, _with_alpha(colour, alpha * 0.7))
-
   def _draw_traction(self, rect: rl.Rectangle, fade: float) -> None:
-    """The two front wheels, tucked under the coolant readout and sharing its right edge.
+    """The two front wheels, top right against the margin.
     Green while they track the undriven rears, amber or red as they break away, grey when we
     are too slow for the measurement to mean anything."""
     right = rect.x + rect.width - MARGIN_X

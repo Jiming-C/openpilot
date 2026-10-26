@@ -20,11 +20,6 @@ BUTTONS_DICT = {CruiseButtons.RES_ACCEL: ButtonType.accelCruise, CruiseButtons.D
 SETTINGS_BUTTONS_DICT = {CruiseSettings.DISTANCE: ButtonType.gapAdjustCruise, CruiseSettings.LKAS: ButtonType.lkas}
 
 
-# COOLANT_TEMP sits at the DBC's floor when the message is absent; the UI reads anything at or
-# below this as "no data" rather than drawing a bogus reading.
-COOLANT_ABSENT = -40.0
-
-
 class CarState(CarStateBase, CarStateExt):
   def __init__(self, CP, CP_SP):
     CarStateBase.__init__(self, CP, CP_SP)
@@ -187,13 +182,6 @@ class CarState(CarStateBase, CarStateExt):
     # for the manual-transmission gauge; both already on the bus in POWERTRAIN_DATA
     ret_sp.engineRpm = float(cp.vl["POWERTRAIN_DATA"]["ENGINE_RPM"])
     ret_sp.pedalGas = float(cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"]) / 255.0
-    # 0x2FF is not in Honda's documentation; scaling derived from logged warm-up curves. Only
-    # the Bosch radarless DBC defines it, and cp.vl raises on a message the DBC does not have,
-    # so guard rather than take down carState parsing on every other Honda.
-    if "ENGINE_TEMPS" in cp.dbc.name_to_msg:
-      ret_sp.coolantTemp = float(cp.vl["ENGINE_TEMPS"]["COOLANT_TEMP"])
-    else:
-      ret_sp.coolantTemp = COOLANT_ABSENT
 
     ret.steeringTorque = cp.vl["STEER_STATUS"]["STEER_TORQUE_SENSOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD.get(self.CP.carFingerprint, 1200)
