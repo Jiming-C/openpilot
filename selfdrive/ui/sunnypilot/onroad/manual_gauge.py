@@ -137,12 +137,26 @@ BIAS_MAX_PEDAL = 0.05
 CAR_W = 72                      # body, not counting the wheels straddling its edges
 CAR_H = 132
 CAR_Y = 36                      # body top, down from the top of the rect
-CAR_ROUND = 0.30
 CAR_LINE = 2
 CAR_ALPHA = 0.22
 WHEEL_W = 20
 WHEEL_H = 36
 WHEEL_INSET = 19                # wheel centre, in from each end of the body
+
+# Outer shape only, traced off a top-down photo of the FE1 and cut down to the few points that
+# still read as this car at 72x132: distance down from the nose, then half-width, both as a
+# fraction. Mirrored for the other side, so it is symmetric by construction. The nose tapers,
+# the tail stays blunt - that is most of what tells you which way the car is pointing.
+_CAR_HALF = ((0.00, 0.26), (0.03, 0.36), (0.07, 0.43), (0.13, 0.47), (0.22, 0.495),
+             (0.35, 0.50), (0.50, 0.50), (0.65, 0.498), (0.78, 0.49), (0.88, 0.47),
+             (0.94, 0.44), (0.98, 0.40), (1.00, 0.36))
+
+# The front wheels turn by the real road-wheel angle: steering wheel degrees over the rack
+# ratio. At a normal 90 deg of lock that is about 6 deg, which is genuinely what the tyres do -
+# it is not exaggerated to make the animation louder, because the number beside it has to stay
+# true. Full lock is around 35 deg and very obvious.
+STEER_SIZE = 30                 # the degree readout, centred inside the body
+STEER_DEADBAND = 0.5            # road-wheel deg, below which it reads a flat 0
 
 COL_OK = rl.Color(74, 222, 128, 255)
 COL_AMBER = rl.Color(251, 191, 36, 255)
@@ -218,6 +232,30 @@ def _gear_color(rpm: float, in_gear: bool) -> rl.Color:
   return _zone_color(rpm)
 
 
+def _fill_quad(corners, colour: rl.Color, alpha: float) -> None:
+  """A filled quad as two triangles. raylib backface-culls draw_triangle and front-facing is
+  negative signed area in y-down screen coords (see _draw_arrow), so rather than trust the
+  caller to hand the corners over the right way round, measure and flip if needed."""
+  p = list(corners)
+  area = sum(p[i][0] * p[(i + 1) % 4][1] - p[(i + 1) % 4][0] * p[i][1] for i in range(4))
+  if area > 0:
+    p.reverse()
+  c = _with_alpha(colour, alpha)
+  v = [rl.Vector2(x, y) for x, y in p]
+  rl.draw_triangle(v[0], v[1], v[2], c)
+  rl.draw_triangle(v[0], v[2], v[3], c)
+
+
+def _car_outline() -> tuple[tuple[float, float], ...]:
+  """The closed outer shape, as fractions of CAR_W x CAR_H from the body's top-left."""
+  right = [(0.5 + hw, y) for y, hw in _CAR_HALF]
+  left = [(0.5 - hw, y) for y, hw in reversed(_CAR_HALF)]
+  return tuple(right + left)
+
+
+CAR_OUTLINE = _car_outline()
+
+
 def _with_alpha(colour: rl.Color, alpha: float) -> rl.Color:
   return rl.Color(colour.r, colour.g, colour.b, int(255 * min(1.0, max(0.0, alpha))))
 
@@ -241,6 +279,7 @@ class ManualGauge:
     self._slip_fr: float | None = None
     self._lugging = False
     self._upshift = False
+    self._road_wheel_deg = 0.0
     self._sweep_start: float | None = None
     self._sweep_done = False
 
@@ -304,6 +343,10 @@ class ManualGauge:
     # from the amber stage on and only under power; nothing to go up to out of 6th
     self._upshift = (1 <= gear < 6 and rpm >= AMBER_RPM
                      and cs_sp.pedalGas > UPSHIFT_MIN_PEDAL)
+
+    cp = ui_state.CP
+    steer_ratio = cp.steerRatio if cp and cp.steerRatio > 1.0 else 15.38
+    self._road_wheel_deg = cs.steeringAngleDeg / steer_ratio
 
   def _update_slip(self, cs, cs_sp) -> None:
     """Front wheelspin against the undriven rears, with the cornering geometry removed."""
@@ -460,14 +503,24 @@ class ManualGauge:
     bx = right - CAR_W - WHEEL_W / 2.0
     by = rect.y + CAR_Y
 
-    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(bx, by, CAR_W, CAR_H), CAR_ROUND, 12,
-                                       CAR_LINE, _with_alpha(COL_WHITE, CAR_ALPHA * fade))
+    # the outer shape, as a closed run of segments
+    line_c = _with_alpha(COL_WHITE, CAR_ALPHA * fade)
+    pts = [rl.Vector2(bx + fx * CAR_W, by + fy * CAR_H) for fx, fy in CAR_OUTLINE]
+    for i, a in enumerate(pts):
+      rl.draw_line_ex(a, pts[(i + 1) % len(pts)], CAR_LINE, line_c)
 
-    def wheel(cx: float, cy: float, colour: rl.Color, a: float) -> None:
-      box = rl.Rectangle(cx - WHEEL_W / 2.0, cy - WHEEL_H / 2.0, WHEEL_W, WHEEL_H)
-      rl.draw_rectangle_rounded(box, 0.35, 6, _with_alpha(colour, a))
+    # positive steeringAngleDeg is a LEFT turn, and screen y runs down, so the rotation that
+    # swings the top of the wheel to the left is the negative one
+    turn = -math.radians(self._road_wheel_deg)
 
-    # fronts: the measurement
+    def wheel(cx: float, cy: float, colour: rl.Color, a: float, angle: float = 0.0) -> None:
+      hw, hh = WHEEL_W / 2.0, WHEEL_H / 2.0
+      ca, sa = math.cos(angle), math.sin(angle)
+      corners = [(cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
+                 for dx, dy in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh))]
+      _fill_quad(corners, colour, a)
+
+    # fronts: the measurement, and the only ones that steer
     front_y = by + WHEEL_INSET
     for cx, slip in ((bx, self._slip_fl), (bx + CAR_W, self._slip_fr)):
       if slip is None:
@@ -479,12 +532,20 @@ class ManualGauge:
           # blink the wheel that is actually spinning, not the pair
           lit = int(rl.get_time() * SLIP_BLINK_HZ * 2) % 2 == 0
           a *= 1.0 if lit else SLIP_BLINK_LOW
-      wheel(cx, front_y, colour, a)
+      wheel(cx, front_y, colour, a, turn)
 
-    # rears: the reference, and decoration. Flat dim, never coloured.
+    # rears: the reference, and decoration. Flat dim, never coloured, never steered.
     rear_y = by + CAR_H - WHEEL_INSET
     for cx in (bx, bx + CAR_W):
       wheel(cx, rear_y, COL_WHITE, TRACK_ALPHA * fade)
+
+    # the angle the fronts are actually at, inside the body so it belongs to the picture
+    deg = self._road_wheel_deg
+    txt = f"{0 if abs(deg) < STEER_DEADBAND else round(abs(deg))}°"
+    tv = measure_text_cached(self._font_bold, txt, STEER_SIZE)
+    rl.draw_text_ex(self._font_bold, txt,
+                    rl.Vector2(bx + (CAR_W - tv.x) / 2.0, by + (CAR_H - tv.y) / 2.0),
+                    STEER_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.75 * fade))
 
     label = "TRACTION"
     tl = measure_text_cached(self._font_semi, label, LABEL_SIZE)
