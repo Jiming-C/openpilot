@@ -84,6 +84,7 @@ class Soundd(QuietMode):
 
     self.current_alert = AudibleAlert.none
     self.current_volume = MIN_VOLUME
+    self.prev_volume = MIN_VOLUME
     self.current_sound_frame = 0
 
     self.ramp_start_volume = MIN_VOLUME
@@ -127,7 +128,15 @@ class Soundd(QuietMode):
         written_frames += frames_to_write
         self.current_sound_frame += frames_to_write
 
-    return ret * self.current_volume
+    # Ramp the gain across the block rather than stepping it. current_volume is recomputed in
+    # the main loop at 20Hz while this callback runs once per 4096 samples (85ms), so a single
+    # scalar multiply makes the waveform jump at every block boundary. Under the mici tuning
+    # above a 3dB gust of road noise moves the gain by 0.17, which on a 0.82-peak file is a
+    # 0.14 instantaneous jump - larger than any transition inside the wav files themselves,
+    # and audible as a click on each block.
+    vol = np.linspace(self.prev_volume, self.current_volume, frames, dtype=np.float32)
+    self.prev_volume = self.current_volume
+    return ret * vol
 
   def callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
     if status:
