@@ -153,8 +153,10 @@ LIGHT_R = 21
 LIGHT_Y = 160                   # centre, down from the top of the rect
 LIGHT_DIM = 0.18                # grey, when there is nothing to watch
 # Only while it is red and waiting. Amber and green are momentary and read for themselves;
-# red is the one that sits there, and a bare dot does not say what it is doing.
-LIGHT_LABEL = "ARMED"
+# red is the one that sits there, and a bare dot does not say what it is doing. "Staged" is
+# the drag racing term for sitting at the line with the beams broken, waiting for the tree -
+# which is exactly the state, and unlike "armed" it does not imply this knows about the lamp.
+LIGHT_LABEL = "STAGED"
 LIGHT_LABEL_GAP = 10
 
 LABEL_SIZE = 18                 # the TRACTION caption
