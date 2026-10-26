@@ -58,6 +58,17 @@ GEAR_RATIOS = {1: 215.0, 2: 122.7, 3: 80.1, 4: 60.2, 5: 48.8, 6: 40.3}   # rpm p
 RATIO_LOW_TOL = 0.03
 RATIO_MIN_MPH = 12.0
 
+# Rev-match: off the throttle and slowing, show what the next gear down would land at. Pure
+# arithmetic off the same measured ratios - no extra CAN. Red when that downshift would go past
+# redline, which is the one case where the number has to stop you rather than help you.
+REVMATCH_MIN_GEAR = 2
+REVMATCH_MAX_PEDAL = 0.05
+REVMATCH_MIN_MPH = 15.0
+REVMATCH_X = 150
+REVMATCH_Y = 56
+REVMATCH_SIZE = 48
+REVMATCH_LABEL = 18
+
 # GEAR_MT also reads 0 for the whole time the clutch is down, so every shift would flash N
 # between gears. Hold the gear we were in for a moment: a shift is quicker than this, sitting
 # in neutral is not, so a real neutral still falls through to N.
@@ -220,6 +231,7 @@ class ManualGauge:
     self._slip_fr: float | None = None
     self._lugging = False
     self._upshift = False
+    self._revmatch: tuple[int, float] | None = None
 
   # ---------------------------------------------------------------- state
 
@@ -274,6 +286,12 @@ class ManualGauge:
                      v_ego > LUG_MIN_SPEED)
     # from the amber stage on; nothing to go up to out of 6th
     self._upshift = 1 <= gear < 6 and rpm >= AMBER_RPM
+
+    mph = v_ego * 2.23694
+    self._revmatch = None
+    if (REVMATCH_MIN_GEAR <= gear <= 6 and cs_sp.pedalGas < REVMATCH_MAX_PEDAL
+            and mph > REVMATCH_MIN_MPH):
+      self._revmatch = (gear - 1, GEAR_RATIOS[gear - 1] * mph)
 
   def _update_slip(self, cs, cs_sp) -> None:
     """Front wheelspin against the undriven rears, with the cornering geometry removed."""
@@ -355,6 +373,7 @@ class ManualGauge:
                     _with_alpha(_gear_color(rpm, in_gear), alpha))
 
     self._draw_traction(rect, fade)
+    self._draw_revmatch(rect, FG_ALPHA * fade)
 
     hx, hy = pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2
     if self._upshift:
@@ -377,6 +396,20 @@ class ManualGauge:
     fill_w = max(BAR_H, w * frac)
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, fill_w, BAR_H), 1.0, 12,
                               _with_alpha(colour, alpha))
+
+  def _draw_revmatch(self, rect: rl.Rectangle, alpha: float) -> None:
+    """What the next gear down would land at, while off the throttle and slowing."""
+    if self._revmatch is None:
+      return
+    gear, target = self._revmatch
+    colour = COL_RED if target > REDLINE_RPM else COL_WHITE
+    x, y = rect.x + REVMATCH_X, rect.y + REVMATCH_Y
+    txt = f"{target:.0f}"
+    tv = measure_text_cached(self._font_bold, txt, REVMATCH_SIZE)
+    rl.draw_text_ex(self._font_bold, txt, rl.Vector2(x, y), REVMATCH_SIZE, 0,
+                    _with_alpha(colour, alpha))
+    rl.draw_text_ex(self._font_semi, f"FOR {gear}", rl.Vector2(x, y + tv.y + TEMP_GAP),
+                    REVMATCH_LABEL, 0, _with_alpha(colour, alpha * 0.7))
 
   def _draw_traction(self, rect: rl.Rectangle, fade: float) -> None:
     """The two front wheels, top right against the margin.
