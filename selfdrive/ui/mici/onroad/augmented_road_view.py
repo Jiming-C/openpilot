@@ -212,19 +212,27 @@ class AugmentedRoadView(CameraView):
       int(self._content_rect.height)
     )
 
+    # When the HUD has the view completely covered - the manual gauge's opaque scrim, while
+    # disengaged - the camera and the model are drawn and then hidden behind it in the same
+    # frame. Skip both: identical pixels, none of the work. The frame is still received inside
+    # the call below, so the stream keeps flowing and is current the instant we draw again.
+    blanked = self._hud_renderer.blanks_road_view()
+
     # Render the base camera view
-    super()._render(self._content_rect)
+    super()._render(self._content_rect, draw=not blanked)
 
-    # Draw all UI overlays
-    self._model_renderer.render(self._content_rect)
+    if not blanked:
+      # Draw all UI overlays
+      self._model_renderer.render(self._content_rect)
 
-    # Fade out bottom of overlays for looks
-    rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
+      # Fade out bottom of overlays for looks
+      rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
 
     alert_to_render, not_animating_out = self._alert_renderer.will_render()
 
     # Hide DMoji when disengaged unless AlwaysOnDM is enabled
-    should_draw_dmoji = (not self._hud_renderer.drawing_top_icons() and ui_state.is_onroad() and
+    should_draw_dmoji = (not blanked and not self._hud_renderer.drawing_top_icons() and
+                         ui_state.is_onroad() and
                          (ui_state.status != UIStatus.DISENGAGED or ui_state.always_on_dm))
     self._driver_state_renderer.set_should_draw(should_draw_dmoji)
     self._driver_state_renderer.set_position(self._rect.x + 16, self._rect.y + 10)

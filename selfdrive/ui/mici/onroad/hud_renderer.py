@@ -139,6 +139,11 @@ class HudRenderer(Widget):
     # whether we're drawing any top icons currently
     return bool(self._set_speed_alpha_filter.x > 1e-2)
 
+  def blanks_road_view(self) -> bool:
+    # whether what this renderer draws covers the road view completely, in which case
+    # AugmentedRoadView can skip drawing the camera and the model underneath it
+    return False
+
   def _update_state(self) -> None:
     """Update HUD state based on car state and controls state."""
     sm = ui_state.sm

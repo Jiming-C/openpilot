@@ -223,12 +223,16 @@ class CameraView(Widget):
       [0.0, 0.0, 1.0]
     ])
 
-  def _render(self, rect: rl.Rectangle):
+  def _render(self, rect: rl.Rectangle, draw: bool = True):
+    """draw=False still connects and still consumes the frame - it only skips putting it on
+    screen. The recv below has to keep running whatever happens, or the stream is never
+    drained and the picture is stale the moment we start drawing again."""
     if self._switching:
       self._handle_switch()
 
     if not self._ensure_connection():
-      self._draw_placeholder(rect)
+      if draw:
+        self._draw_placeholder(rect)
       return
 
     # Try to get a new buffer without blocking
@@ -241,7 +245,12 @@ class CameraView(Widget):
       self.frame = None
 
     if not self.frame:
-      self._draw_placeholder(rect)
+      if draw:
+        self._draw_placeholder(rect)
+      return
+
+    # everything above is bookkeeping and has to run; everything below is the picture
+    if not draw:
       return
 
     transform = self._calc_frame_matrix(rect)

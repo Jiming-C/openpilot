@@ -29,6 +29,9 @@ class HudRendererSP(HudRenderer):
     self.manual_gauge.render(rect)
     self.blind_spot_indicators.render(rect)
 
+  def blanks_road_view(self) -> bool:
+    return self.manual_gauge.covers_road
+
   def _has_blind_spot_detected(self) -> bool:
 
     return self.blind_spot_indicators.detected

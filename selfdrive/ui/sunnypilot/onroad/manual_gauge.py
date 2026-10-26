@@ -302,6 +302,15 @@ class ManualGauge:
   # ---------------------------------------------------------------- state
 
   @property
+  def covers_road(self) -> bool:
+    """True when the scrim is fully opaque across the whole rect, so nothing drawn underneath
+    could be seen anyway. AugmentedRoadView uses this to skip the camera and the model render:
+    the pixels come out identical, the work does not happen. Deliberately tied to SCRIM_ALPHA
+    so that lowering the scrim turns the optimisation off by itself rather than leaving a
+    black screen where the road used to be."""
+    return SCRIM_ALPHA >= 1.0 and self._fade_filter.x > 0.99
+
+  @property
   def _is_manual(self) -> bool:
     cp = ui_state.sm['carParams']
     return str(cp.transmissionType) == 'manual'
