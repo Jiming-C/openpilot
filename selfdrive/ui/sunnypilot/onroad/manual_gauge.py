@@ -51,7 +51,11 @@ MIN_TRUST_SPEED = 1.3           # m/s, ~3 mph
 # demands means it is not driving the wheels. Ratios are medians measured from logged driving,
 # all within 1% of the published ones. Only the low side is tested - rev-matching runs high.
 GEAR_RATIOS = {1: 215.0, 2: 122.7, 3: 80.1, 4: 60.2, 5: 48.8, 6: 40.3}   # rpm per mph
-RATIO_LOW_TOL = 0.04
+# 3% rather than 4%: validated on 77k samples of logged driving, it rejects 32% of
+# clearly-disconnected frames instead of 27% for the same 0.16% false-neutral rate.
+# Tighter than this (2%) nearly doubles false neutrals for little extra catch. The rest
+# are genuinely ambiguous - 6th at 23 mph and idle are the same engine speed.
+RATIO_LOW_TOL = 0.03
 RATIO_MIN_MPH = 12.0
 
 # GEAR_MT also reads 0 for the whole time the clutch is down, so every shift would flash N
