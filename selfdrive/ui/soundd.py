@@ -121,10 +121,15 @@ class Soundd(QuietMode):
       sound_data = self.loaded_sounds[self.current_alert]
       written_frames = 0
 
-      current_sound_frame = self.current_sound_frame % len(sound_data)
       loops = self.current_sound_frame // len(sound_data)
 
       while written_frames < frames and (num_loops is None or loops < num_loops):
+        # Both of these have to be recomputed every pass. Hoisted out of the loop, a file that
+        # wraps part way through a block took the second pass from the same stale offset and
+        # copied the tail twice instead of continuing from the start - an audible stutter at
+        # every loop point, on any sound whose length is not a multiple of the block.
+        current_sound_frame = self.current_sound_frame % len(sound_data)
+        loops = self.current_sound_frame // len(sound_data)
         available_frames = sound_data.shape[0] - current_sound_frame
         frames_to_write = min(available_frames, frames - written_frames)
         ret[written_frames:written_frames+frames_to_write] = sound_data[current_sound_frame:current_sound_frame+frames_to_write]
