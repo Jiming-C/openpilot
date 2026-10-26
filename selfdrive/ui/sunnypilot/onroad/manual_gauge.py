@@ -176,11 +176,25 @@ WHEEL_Y = 40
 WHEEL_R = 10                    # corner radius
 WHEEL_SEGS = 3                  # segments per corner arc; 3 is already smooth at this size
 
-# They turn by the real road-wheel angle: steering wheel degrees over the rack ratio. At a
-# normal 90 deg of lock that is about 6 deg, which is genuinely what the tyres do, and full
-# lock is around 35. It is not exaggerated to make the movement louder. There is no number
-# beside it - you are holding the steering wheel, so how much lock you have is the one thing
-# on this screen you already know, and the angle only duplicated what the shapes show.
+# The watch dot is only ever lit standing still, so while moving it has nothing to say and the
+# wheels take its space. One smoothed value drives the whole swap - size, gap, position and the
+# dot's own fade - so it cannot pop part way through, the same trick the screen fade uses.
+WHEEL_W_BIG = 58
+WHEEL_H_BIG = 94
+WHEEL_GAP_BIG = 28
+WHEEL_Y_BIG = 44
+GROW_RC = 0.22                  # seconds
+GROW_INSET = 10                 # pull the pair in as it grows, so the big size still fits
+
+# The arrows ease in rather than snapping on, and drift the way they are pointing.
+ARROW_RC = 0.10
+ARROW_DRIFT = 3.5               # px of travel
+ARROW_DRIFT_HZ = 1.4
+
+# A change of gear kicks the numeral and settles, so a shift registers even in peripheral vision.
+GEAR_POP = 0.10                 # fraction of GEAR_SIZE
+GEAR_POP_RC = 0.07
+
 
 COL_OK = rl.Color(74, 222, 128, 255)
 COL_AMBER = rl.Color(251, 191, 36, 255)
@@ -279,20 +293,18 @@ def _fill_poly(points, colour: rl.Color, alpha: float) -> None:
   rl.draw_triangle_fan(p, len(p), _with_alpha(colour, alpha))
 
 
-def _wheel_poly(cx: float, cy: float, angle: float) -> list[tuple[float, float]]:
-  """A rounded rectangle the size of a wheel, rotated about its own centre. Built as a loop of
-  points rather than drawn as a rounded rect because raylib cannot rotate one."""
-  hw, hh = WHEEL_W / 2.0, WHEEL_H / 2.0
+def _wheel_poly(cx: float, cy: float, w: float, h: float) -> list[tuple[float, float]]:
+  """A rounded rectangle the size of a wheel. Built as a loop of points rather than drawn as a
+  rounded rect so it can be any size the animation asks for and still fill as one polygon."""
+  hw, hh = w / 2.0, h / 2.0
   r = min(WHEEL_R, hw, hh)
-  ca, sa = math.cos(angle), math.sin(angle)
   pts = []
   # the four corner centres, each sweeping a quarter turn: top-right, then round
   for sx, sy, a0 in ((1, -1, -math.pi / 2), (1, 1, 0.0), (-1, 1, math.pi / 2), (-1, -1, math.pi)):
     ox, oy = sx * (hw - r), sy * (hh - r)
     for k in range(WHEEL_SEGS + 1):
       a = a0 + (math.pi / 2) * k / WHEEL_SEGS
-      dx, dy = ox + r * math.cos(a), oy + r * math.sin(a)
-      pts.append((cx + dx * ca - dy * sa, cy + dx * sa + dy * ca))
+      pts.append((cx + ox + r * math.cos(a), cy + oy + r * math.sin(a)))
   return pts
 
 
@@ -311,6 +323,11 @@ class ManualGauge:
     # 0.12 put a visible ~0.12s lag on the bar; 0.05 still smooths sensor jitter
     self._rpm_filter = FirstOrderFilter(0.0, 0.05, 1 / gui_app.target_fps)
     self._fade_filter = FirstOrderFilter(0.0, 0.18, 1 / gui_app.target_fps)
+    self._grow_filter = FirstOrderFilter(1.0, GROW_RC, dt)
+    self._arrow_up = FirstOrderFilter(0.0, ARROW_RC, dt)
+    self._arrow_dn = FirstOrderFilter(0.0, ARROW_RC, dt)
+    self._pop = FirstOrderFilter(0.0, GEAR_POP_RC, dt)
+    self._pop_gear = None
 
     self._gear = GEAR_CLUTCH
     self._held_gear = 0         # last gear we actually believed, for the clutch hold
@@ -319,7 +336,6 @@ class ManualGauge:
     self._slip_fr: float | None = None
     self._lugging = False
     self._upshift = False
-    self._road_wheel_deg = 0.0
     self._signal = SIGNAL_OFF
     self._last_moving = 0.0
     self._fired_at = -SIGNAL_HOLD
@@ -402,11 +418,15 @@ class ManualGauge:
     self._upshift = (1 <= gear < 6 and rpm >= AMBER_RPM
                      and cs_sp.pedalGas > UPSHIFT_MIN_PEDAL)
 
-    cp = ui_state.CP
-    steer_ratio = cp.steerRatio if cp and cp.steerRatio > 1.0 else 15.38
-    self._road_wheel_deg = cs.steeringAngleDeg / steer_ratio
-
     self._update_signal(cs, now)
+
+    # the wheels own the dot's space whenever the dot has nothing to show
+    self._grow_filter.update(0.0 if self._signal != SIGNAL_OFF else 1.0)
+    self._arrow_up.update(1.0 if self._upshift else 0.0)
+    self._arrow_dn.update(1.0 if self._lugging else 0.0)
+    if gear != self._pop_gear:
+      self._pop_gear, self._pop.x = gear, 1.0
+    self._pop.update(0.0)
 
   def _update_signal(self, cs, now: float) -> None:
     """Which colour the watch dot is showing. See the SIGNAL_ notes above: this follows the
@@ -526,23 +546,27 @@ class ManualGauge:
 
     # gear numeral, left, big, taking the bar's colour as the revs climb
     label = _gear_label(self._gear)
-    txt = measure_text_cached(self._font_bold, label, GEAR_SIZE)
+    size = GEAR_SIZE * (1.0 + GEAR_POP * self._pop.x)
+    txt = measure_text_cached(self._font_bold, label, size)
     pos = rl.Vector2(rect.x + GEAR_X, bar_y - GEAR_GAP - txt.y)
-    rl.draw_text_ex(self._font_bold, label, pos, GEAR_SIZE, 0,
+    rl.draw_text_ex(self._font_bold, label, pos, size, 0,
                     _with_alpha(_gear_color(rpm, in_gear), alpha))
 
     self._draw_traction(rect, fade)
     self._draw_signal(rect, fade)
 
     hx, hy = pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2
-    if self._upshift:
+    drift = ARROW_DRIFT * (0.5 + 0.5 * math.sin(rl.get_time() * 2 * math.pi * ARROW_DRIFT_HZ))
+    if self._arrow_up.x > 0.004:
       # takes the bar's colour and its swell/blink, since it says the same thing
-      self._draw_arrow(hx, hy, True, _zone_color(rpm), alpha)
-    elif self._lugging:
+      self._draw_arrow(hx, hy, True, _zone_color(rpm), alpha * self._arrow_up.x,
+                       self._arrow_up.x, drift)
+    elif self._arrow_dn.x > 0.004:
       # down here the bar is green and steady, so the arrow is the only thing that can move
       lit = int(rl.get_time() * HINT_BLINK_HZ * 2) % 2 == 0
       self._draw_arrow(hx, hy, False, COL_AMBER,
-                       FG_ALPHA * (1.0 if lit else HINT_BLINK_LOW) * fade)
+                       FG_ALPHA * (1.0 if lit else HINT_BLINK_LOW) * fade * self._arrow_dn.x,
+                       self._arrow_dn.x, drift)
 
   def _sweep_phase(self) -> float | None:
     """Seconds into the one-shot startup sweep, or None once it has run."""
@@ -588,8 +612,8 @@ class ManualGauge:
     x0 = right - (2 * WHEEL_W + WHEEL_GAP)
     wcy = rect.y + WHEEL_Y + WHEEL_H / 2.0
     for i in range(2):
-      _fill_poly(_wheel_poly(x0 + i * (WHEEL_W + WHEEL_GAP) + WHEEL_W / 2.0, wcy, 0.0),
-                 colour, alpha)
+      _fill_poly(_wheel_poly(x0 + i * (WHEEL_W + WHEEL_GAP) + WHEEL_W / 2.0, wcy,
+                             WHEEL_W, WHEEL_H), colour, alpha)
     cap = "TRACTION"
     cv = measure_text_cached(self._font_semi, cap, LABEL_SIZE)
     rl.draw_text_ex(self._font_semi, cap,
@@ -613,14 +637,15 @@ class ManualGauge:
   def _draw_traction(self, rect: rl.Rectangle, fade: float) -> None:
     """The two front wheels, top right against the margin. Green while they track the undriven
     rears, amber or red as they break away, grey when we are too slow for the measurement to
-    mean anything - and turned to the angle the tyres are really at."""
-    right = rect.x + rect.width - MARGIN_X
-    x0 = right - (2 * WHEEL_W + WHEEL_GAP)
-    cy = rect.y + WHEEL_Y + WHEEL_H / 2.0
-
-    # positive steeringAngleDeg is a LEFT turn, and screen y runs down, so the rotation that
-    # swings the top of the wheel to the left is the negative one
-    turn = -math.radians(self._road_wheel_deg)
+    mean anything."""
+    grow = self._grow_filter.x
+    w = WHEEL_W + (WHEEL_W_BIG - WHEEL_W) * grow
+    h = WHEEL_H + (WHEEL_H_BIG - WHEEL_H) * grow
+    gap = WHEEL_GAP + (WHEEL_GAP_BIG - WHEEL_GAP) * grow
+    wy = WHEEL_Y + (WHEEL_Y_BIG - WHEEL_Y) * grow
+    right = rect.x + rect.width - MARGIN_X - GROW_INSET * grow
+    x0 = right - (2 * w + gap)
+    cy = rect.y + wy + h / 2.0
 
     for i, slip in enumerate((self._slip_fl, self._slip_fr)):
       if slip is None:
@@ -632,25 +657,30 @@ class ManualGauge:
           # blink the wheel that is actually spinning, not the pair
           lit = int(rl.get_time() * SLIP_BLINK_HZ * 2) % 2 == 0
           a *= 1.0 if lit else SLIP_BLINK_LOW
-      cx = x0 + i * (WHEEL_W + WHEEL_GAP) + WHEEL_W / 2.0
-      _fill_poly(_wheel_poly(cx, cy, turn), colour, a)
+      cx = x0 + i * (w + gap) + w / 2.0
+      _fill_poly(_wheel_poly(cx, cy, w, h), colour, a)
 
     label = "TRACTION"
     tl = measure_text_cached(self._font_semi, label, LABEL_SIZE)
     rl.draw_text_ex(self._font_semi, label,
-                    rl.Vector2(right - tl.x, rect.y + WHEEL_Y + WHEEL_H + LABEL_GAP),
+                    rl.Vector2(right - tl.x, rect.y + wy + h + LABEL_GAP),
                     LABEL_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.7 * fade))
 
   def _draw_signal(self, rect: rl.Rectangle, fade: float) -> None:
-    """One dot under the wheels. Grey when there is nothing to watch, so it is never claiming
-    to know something it does not."""
+    """One dot under the wheels, shrinking away as they grow into its space. Grey when there is
+    nothing to watch, so it is never claiming to know something it does not."""
     colour, a = {
       SIGNAL_WAIT: (COL_RED, FG_ALPHA),
       SIGNAL_SOON: (COL_AMBER, FG_ALPHA),
       SIGNAL_GO: (COL_OK, FG_ALPHA),
     }.get(self._signal, (COL_WHITE, LIGHT_DIM))
+    shrink = 1.0 - self._grow_filter.x
+    a *= shrink
+    if a * fade < 0.004:
+      return
+    r = LIGHT_R * (0.4 + 0.6 * shrink)
     cx = rect.x + rect.width - MARGIN_X - LIGHT_R
-    rl.draw_circle(int(cx), int(rect.y + LIGHT_Y), LIGHT_R, _with_alpha(colour, a * fade))
+    rl.draw_circle(int(cx), int(rect.y + LIGHT_Y), r, _with_alpha(colour, a * fade))
 
   def _draw_edge_glow(self, rect: rl.Rectangle, colour: rl.Color, alpha: float) -> None:
     """Glow in from all four edges rather than washing the whole view. Corners get both passes,
@@ -664,8 +694,8 @@ class ManualGauge:
     rl.draw_rectangle_gradient_h(x, y, d, h, c, rl.BLANK)
     rl.draw_rectangle_gradient_h(x + w - d, y, d, h, rl.BLANK, c)
 
-  def _draw_arrow(self, cx: float, cy: float, up: bool,
-                  colour: rl.Color, alpha: float) -> None:
+  def _draw_arrow(self, cx: float, cy: float, up: bool, colour: rl.Color, alpha: float,
+                  scale: float = 1.0, drift: float = 0.0) -> None:
     """Shift arrow, drawn rather than typed: the bundled font has no arrow glyph.
 
     raylib backface-culls draw_triangle, and wound the wrong way nothing is drawn at all,
@@ -675,7 +705,10 @@ class ManualGauge:
     check it against those two rather than against an assumption. Getting this backwards is
     exactly why these never appeared on the car.
     """
-    h = HINT_SIZE
+    h = HINT_SIZE * scale
+    if h < 1.0:
+      return
+    cy += -drift if up else drift
     c = _with_alpha(colour, alpha)
     if up:
       rl.draw_triangle(rl.Vector2(cx + h / 2, cy + h / 3),
