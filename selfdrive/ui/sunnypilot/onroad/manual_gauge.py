@@ -580,6 +580,24 @@ class ManualGauge:
     rl.draw_text_ex(self._font_bold, label, pos, GEAR_SIZE, 0, _with_alpha(colour, alpha))
     self._draw_arrow(pos.x + txt.x + HINT_GAP, pos.y + txt.y / 2, up, colour, alpha)
 
+    # The wheels, the caption and the watch dot take the sweep's colour too, so one pass
+    # proves every element on this screen is really being drawn AND that each can reach every
+    # colour it will ever need - green through amber to red and back. That is the whole point
+    # of having a self-test: a condition firing in a log never proved a pixel appeared.
+    right = rect.x + rect.width - MARGIN_X
+    x0 = right - (2 * WHEEL_W + WHEEL_GAP)
+    wcy = rect.y + WHEEL_Y + WHEEL_H / 2.0
+    for i in range(2):
+      _fill_poly(_wheel_poly(x0 + i * (WHEEL_W + WHEEL_GAP) + WHEEL_W / 2.0, wcy, 0.0),
+                 colour, alpha)
+    cap = "TRACTION"
+    cv = measure_text_cached(self._font_semi, cap, LABEL_SIZE)
+    rl.draw_text_ex(self._font_semi, cap,
+                    rl.Vector2(right - cv.x, rect.y + WHEEL_Y + WHEEL_H + LABEL_GAP),
+                    LABEL_SIZE, 0, _with_alpha(COL_WHITE, FG_ALPHA * 0.7 * fade))
+    rl.draw_circle(int(right - LIGHT_R), int(rect.y + LIGHT_Y), LIGHT_R,
+                   _with_alpha(colour, alpha))
+
   def _draw_bar(self, x: float, y: float, w: float, frac: float,
                 colour: rl.Color, alpha: float, fade: float) -> None:
     """A faint full-length track with one solid pill over it, the whole fill in one colour."""
