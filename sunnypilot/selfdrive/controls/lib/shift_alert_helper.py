@@ -7,9 +7,6 @@ See the LICENSE.md file in the root directory for more details.
 
 from cereal import messaging, custom
 
-from openpilot.common.params import Params
-from openpilot.common.realtime import DT_MDL
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 # Three marks through the amber band, then the redline tone. The first and last are deliberately
@@ -29,30 +26,24 @@ MIN_GEAR, MAX_GEAR = 1, 5       # nothing to go up to out of 6th
 
 
 class ShiftAlertHelper:
+  # No param toggle, deliberately. This branch is PREBUILT: the list of valid param keys is
+  # compiled into common/params_pyx.so, so a key added to params_keys.h does not exist on the
+  # device. Reading one that is not there raises UnknownKeyName, and doing that here took
+  # plannerd down at startup - which also took the green-light chime and MADS with it.
   def __init__(self):
-    self._params = Params()
-    self.frame = -1
-    self.enabled = self._params.get_bool("ShiftAlert")
     # which marks have already fired on this climb
     self._armed = [True] * len(BEEP_RPM)
     self._holding = False
     self._was_active = False
 
-  def _read_params(self) -> None:
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.enabled = self._params.get_bool("ShiftAlert")
-
   def update(self, sm: messaging.SubMaster, events_sp: EventsSP) -> None:
-    self.frame += 1
-    self._read_params()
-
     cs_sp = sm['carStateSP']
     rpm = max(0.0, float(cs_sp.engineRpm))
     gear = int(cs_sp.gearMt)
 
     # the cue only makes sense while you are the one choosing the gear, on the power, with a
     # gear above you to go to
-    active = (self.enabled and not sm['carControl'].enabled
+    active = (not sm['carControl'].enabled
               and MIN_GEAR <= gear <= MAX_GEAR and cs_sp.pedalGas > MIN_PEDAL)
 
     if not active:
