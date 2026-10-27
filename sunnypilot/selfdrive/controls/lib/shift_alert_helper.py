@@ -10,8 +10,8 @@ from cereal import messaging, custom
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 # Three marks through the amber band, then the redline tone. The first and last are deliberately
-# the same numbers the rev bar changes colour on (AMBER_RPM and RED_RPM in manual_gauge.py), so
-# the sound and the colour move together instead of drifting apart by a few hundred rpm.
+# the same numbers the rev bar changes color on (AMBER_RPM and RED_RPM in manual_gauge.py), so
+# the sound and the color move together instead of drifting apart by a few hundred rpm.
 BEEP_RPM = (4800.0, 5150.0, 5500.0)
 HOLD_RPM = 5900.0
 

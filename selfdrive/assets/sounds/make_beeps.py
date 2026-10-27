@@ -20,8 +20,8 @@ SR = 48000
 E5, FS5, G5, A5, C6, E6, E7 = 659.26, 739.99, 783.99, 880.00, 1046.50, 1318.51, 2637.02
 
 
-def tone(freq, dur, decay, amp=1.0, attack=0.005, harm=0.0):
-  t = np.arange(int(SR * dur)) / SR
+def tone(freq, duration, decay, amp=1.0, attack=0.005, harm=0.0):
+  t = np.arange(int(SR * duration)) / SR
   s = np.sin(2 * np.pi * freq * t)
   if harm:  # harmonics add bite for the alerts that must cut through road noise
     s += harm * np.sin(2 * np.pi * freq * 2 * t) + (harm * 0.5) * np.sin(2 * np.pi * freq * 3 * t)
@@ -31,10 +31,10 @@ def tone(freq, dur, decay, amp=1.0, attack=0.005, harm=0.0):
   return amp * s
 
 
-def build(notes, total, decay=6.85, harm=0.0, attack=0.005, dur=0.5):
+def build(notes, total, decay=6.85, harm=0.0, attack=0.005, duration=0.5):
   out = np.zeros(int(SR * total))
   for onset, freq, amp in notes:
-    s = tone(freq, dur, decay, amp, attack, harm)
+    s = tone(freq, duration, decay, amp, attack, harm)
     o = int(SR * onset)
     e = min(len(out), o + len(s))
     out[o:e] += s[:e - o]
@@ -54,13 +54,13 @@ def save(name, y, peak=0.82):
 
 if __name__ == "__main__":
   # engage/disengage are a mirrored pair: up = on, down = off
-  save("engage.wav",             build([(0, E5, 1.0), (0.24, FS5, 1.0)], 0.80, dur=0.58))
-  save("disengage.wav",          build([(0, FS5, 1.0), (0.24, E5, 1.0)], 0.80, dur=0.58))
-  save("green_light.wav",        build([(0, A5, 1.0)], 0.60, dur=0.55), 0.62)
-  save("refuse.wav",             build([(0, G5, 0.9), (0.15, G5, 1.0)], 0.65, dur=0.48))
-  save("prompt.wav",             build([(0, A5, 0.85), (0.22, C6, 1.0)], 0.85, dur=0.55), 0.72)
-  save("prompt_single_low.wav",  build([(0, E5, 1.0)], 0.45, dur=0.4), 0.70)
-  save("prompt_single_high.wav", build([(0, A5, 1.0)], 0.42, dur=0.38), 0.70)
+  save("engage.wav",             build([(0, E5, 1.0), (0.24, FS5, 1.0)], 0.80, duration=0.58))
+  save("disengage.wav",          build([(0, FS5, 1.0), (0.24, E5, 1.0)], 0.80, duration=0.58))
+  save("green_light.wav",        build([(0, A5, 1.0)], 0.60, duration=0.55), 0.62)
+  save("refuse.wav",             build([(0, G5, 0.9), (0.15, G5, 1.0)], 0.65, duration=0.48))
+  save("prompt.wav",             build([(0, A5, 0.85), (0.22, C6, 1.0)], 0.85, duration=0.55), 0.72)
+  save("prompt_single_low.wav",  build([(0, E5, 1.0)], 0.45, duration=0.4), 0.70)
+  save("prompt_single_high.wav", build([(0, A5, 1.0)], 0.42, duration=0.38), 0.70)
 
   # These loop until the driver responds. Kept high and harsh on purpose.
   save("prompt_distracted.wav",  build([(0, C6, 0.95), (0.16, C6, 1.0)], 0.80, decay=9, harm=0.12, attack=0.003))
