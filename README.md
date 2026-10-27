@@ -118,7 +118,15 @@ with the controls flat. In steering-only mode the camera is drawn as normal.
 Three beeps through the amber band at 4800 / 5150 / 5500 rpm, then a held tone at 5900. Each mark
 re-arms only after the revs drop 250 rpm below it, and arriving already above a mark spends it
 silently, so squeezing the throttle at 5100 does not beep for a line you passed a minute ago. The cue
-only runs while you are driving the car yourself, above 15% throttle, in gears 1 through 5.
+only runs while you are driving the car yourself, above 15% throttle, in gears 1 through 5. Beeps stay
+at least 0.3 s apart: in 2nd the marks are 0.35 s apart and each gets its own, while in 1st they come
+0.14 s apart and the later two share one.
+
+Every beep reaches the speaker. Run end to end through the real helper, alert manager and `soundd` on
+the logged pull and on simulated pulls in 1st, 2nd and 3rd, at 30 different timing offsets each, none
+is lost and the worst delay from the rpm crossing to sound is 116 ms. The tone sits inside the band
+stock openpilot already plays through this speaker (780 to 2750 Hz), and on logged drives the cabin mic
+rose from 24 dB to 48-51 dB each time the green-light chime, which takes the same path, played.
 
 The tone is not invented. A Type R shift chime was pulled from video and measured at **1333 Hz**,
 essentially a pure sine (second harmonic 23.8 dB down). 48000 and 1333 are coprime, so 1333 cycles is
@@ -127,9 +135,9 @@ re-tuned to clear the comma 4 speaker's low-frequency rolloff, and the volume cu
 the stock mapping assumes a louder mic than the comma 4 has, and mapped a measured 27-43 dB cabin to
 9-37% volume, which is inaudible at speed.
 
-### Two bugs in `soundd` that are not specific to this car
+### Bugs in `soundd` that are not specific to this car
 
-Both affect **every looping alert in openpilot, the collision warning included**:
+The first two affect **every looping alert in openpilot, the collision warning included**:
 
 - **Volume stepped, not ramped.** Gain was applied as one scalar per 4096-sample block while
   `current_volume` updates at 20 Hz, so the waveform jumped at every block boundary. Under the comma 4
@@ -139,8 +147,18 @@ Both affect **every looping alert in openpilot, the collision warning included**
   file that wrapped part way through a block took its second pass from the same stale offset and
   copied the tail twice. Audible as a stutter at every loop point, on any sound whose length is not a
   multiple of the block.
+- **One-shot sounds ran past their end.** The play count was checked before the wrap, so the block
+  holding a sound's last sample kept going. Upstream that repeats the final few milliseconds, hidden
+  when a file fades out; this branch's first fix for the loop bug replayed the start instead, a 75 ms
+  bip after every beep and chime. Both now stop on the last sample: all 13 sounds play back sample for
+  sample.
+- **The same alert twice in a row played once.** `soundd` only replays when `alertSound` changes, and
+  a sound only counts as finished once the block holding its last sample is rendered, up to 85 ms
+  after it is heard. So the poll that would see an alert end often found the sound still playing, the
+  gap went unnoticed, and the repeat was dropped: on a pull in 1st, two shift beeps of three. It now
+  remembers that the alert went away.
 
-These two are worth upstreaming on their own.
+These are worth upstreaming on their own.
 
 ---
 
