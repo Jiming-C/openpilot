@@ -7,9 +7,6 @@ See the LICENSE.md file in the root directory for more details.
 
 from cereal import messaging, custom
 
-from openpilot.common.params import Params
-from openpilot.common.realtime import DT_MDL
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 # Three marks through the amber band, then the redline tone. The first and last are deliberately
@@ -27,25 +24,23 @@ REARM_MARGIN = 250.0
 MIN_PEDAL = 0.15
 MIN_GEAR, MAX_GEAR = 1, 5       # nothing to go up to out of 6th
 
+# No param switch. This branch ships prebuilt, so the key map is compiled into params_pyx.so and a
+# new key in params_keys.h never reaches the device: Params.get_bool raises UnknownKeyName, which
+# took plannerd down at construction and with it engagement, the green-light chime and every shift
+# sound (routes 000001b4-b6). The gates in update() already keep the cue silent on an automatic,
+# while engaged, in 6th and off the throttle, so it needs no separate off switch to be safe.
+ENABLED = True
+
 
 class ShiftAlertHelper:
   def __init__(self):
-    self._params = Params()
-    self.frame = -1
-    self.enabled = self._params.get_bool("ShiftAlert")
+    self.enabled = ENABLED
     # which marks have already fired on this climb
     self._armed = [True] * len(BEEP_RPM)
     self._holding = False
     self._was_active = False
 
-  def _read_params(self) -> None:
-    if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.enabled = self._params.get_bool("ShiftAlert")
-
   def update(self, sm: messaging.SubMaster, events_sp: EventsSP) -> None:
-    self.frame += 1
-    self._read_params()
-
     cs_sp = sm['carStateSP']
     rpm = max(0.0, float(cs_sp.engineRpm))
     gear = int(cs_sp.gearMt)
