@@ -86,6 +86,7 @@ class Soundd(QuietMode):
     self.load_sounds()
 
     self.current_alert = AudibleAlert.none
+    self.alert_went_away = False
     self.current_volume = MIN_VOLUME
     self.prev_volume = MIN_VOLUME
     self.current_sound_frame = 0
@@ -121,15 +122,18 @@ class Soundd(QuietMode):
       sound_data = self.loaded_sounds[self.current_alert]
       written_frames = 0
 
-      loops = self.current_sound_frame // len(sound_data)
-
-      while written_frames < frames and (num_loops is None or loops < num_loops):
+      while written_frames < frames:
         # Both of these have to be recomputed every pass. Hoisted out of the loop, a file that
         # wraps part way through a block took the second pass from the same stale offset and
         # copied the tail twice instead of continuing from the start - an audible stutter at
         # every loop point, on any sound whose length is not a multiple of the block.
         current_sound_frame = self.current_sound_frame % len(sound_data)
         loops = self.current_sound_frame // len(sound_data)
+        # And the play count is checked after the wrap, not before it. Checked first, a one-shot
+        # sound ending part way through a block wrapped and replayed its own attack for the rest
+        # of that block: a 75ms "bip" after every shift beep, chime and engage sound.
+        if num_loops is not None and loops >= num_loops:
+          break
         available_frames = sound_data.shape[0] - current_sound_frame
         frames_to_write = min(available_frames, frames - written_frames)
         ret[written_frames:written_frames+frames_to_write] = sound_data[current_sound_frame:current_sound_frame+frames_to_write]
@@ -152,13 +156,26 @@ class Soundd(QuietMode):
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
-    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame > len(self.loaded_sounds[self.current_alert])
+    # >=, not >: get_sound_data now stops a one-shot exactly at its last sample, so the frame
+    # counter lands on len() and no further. With > it never counted as played, soundd ignored
+    # the alert ending, and the next shift beep - the same alert again - never restarted.
+    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_alert])
+    if new_alert != self.current_alert:
+      self.alert_went_away = True
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       if new_alert == AudibleAlert.warningImmediate:
         self.ramp_start_volume = self.current_volume
         self.ramp_start_time = time.monotonic()
       self.current_alert = new_alert
       self.current_sound_frame = 0
+      self.alert_went_away = False
+    elif new_alert == self.current_alert != AudibleAlert.none and self.alert_went_away and current_alert_played_once:
+      # The same alert again, after it ended: a new one, so play it again. A sound only counts as
+      # played once the block holding its last sample is rendered, up to 85 ms after it is heard,
+      # so the poll that would see the alert gone often still finds the sound "playing" and the
+      # alert's end goes unnoticed. Without this, two shift beeps 0.3 s apart played as one.
+      self.current_sound_frame = 0
+      self.alert_went_away = False
 
   def get_audible_alert(self, sm):
     if sm.updated['selfdriveState']:
