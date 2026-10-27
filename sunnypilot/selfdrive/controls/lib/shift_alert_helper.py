@@ -7,6 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 
 from cereal import messaging, custom
 
+from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 # Three marks through the amber band, then the redline tone. The first and last are deliberately
@@ -18,6 +19,15 @@ HOLD_RPM = 5900.0
 # Each mark re-arms only once the revs fall back a clear margin below it. Without the hysteresis
 # a steady throttle sitting right on a threshold would chatter the beep on and off.
 REARM_MARGIN = 250.0
+
+# soundd only restarts a sound when selfdriveState.alertSound changes, and a shiftBeep alert holds
+# that field for its duration (0.2 s, events.py). A second beep inside the window just extends the
+# same alert, so soundd never sees a change and the beep is lost: through the real helper, alert
+# manager and soundd, a pull in 1st (marks 0.15 s apart) played one beep of three. Beeps at least
+# this far apart let soundd see the alert end between them. A mark crossed sooner waits; if the
+# revs pass the next one meanwhile, the two share a beep, and past HOLD_RPM the held tone takes
+# over anyway. In 2nd the marks are 0.35 s apart, so there nothing waits.
+MIN_BEEP_GAP = 0.3              # s: the 0.2 s alert plus two of soundd's 20 Hz polls
 
 # Only while driving the car yourself: engaged, the computer picks the moment to change speed
 # and a shift cue is noise. Below this throttle you are not accelerating, so nothing is coming.
@@ -39,8 +49,11 @@ class ShiftAlertHelper:
     self._armed = [True] * len(BEEP_RPM)
     self._holding = False
     self._was_active = False
+    self._frame = 0
+    self._last_beep = -10 ** 6      # frame of the last beep, at plannerd's DT_MDL
 
   def update(self, sm: messaging.SubMaster, events_sp: EventsSP) -> None:
+    self._frame += 1
     cs_sp = sm['carStateSP']
     rpm = max(0.0, float(cs_sp.engineRpm))
     gear = int(cs_sp.gearMt)
@@ -81,11 +94,16 @@ class ShiftAlertHelper:
       events_sp.add(custom.OnroadEventSP.EventName.shiftHold)
       return
 
+    # still inside the last beep's window: hold any new mark, armed, until soundd can play it
+    if (self._frame - self._last_beep) * DT_MDL < MIN_BEEP_GAP:
+      return
+
     # highest mark first: crossing two in one frame should beep once, not twice
     for i in range(len(BEEP_RPM) - 1, -1, -1):
       if rpm >= BEEP_RPM[i] and self._armed[i]:
         # everything below is now spent too, or dropping back through them would beep again
         for j in range(i + 1):
           self._armed[j] = False
+        self._last_beep = self._frame
         events_sp.add(custom.OnroadEventSP.EventName.shiftBeep)
         return

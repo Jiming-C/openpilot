@@ -253,13 +253,16 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   # The shift cue carries no text and no visual: the rev bar is already saying this, louder
-  # and sooner. LOW priority on purpose - a real warning must always talk over it.
+  # and sooner. LOW priority on purpose - a real warning must always talk over it. The beep's
+  # alert is kept short: soundd only replays it once alertSound has gone back to none, so the
+  # alert has to clear between marks (0.35 s apart in 2nd), and 0.2 s is still four of soundd's
+  # 20 Hz polls to catch it. MIN_BEEP_GAP in shift_alert_helper.py is built on this number.
   EventNameSP.shiftBeep: {
     ET.PERMANENT: Alert(
       "",
       "",
       AlertStatus.normal, AlertSize.none,
-      Priority.LOW, VisualAlert.none, AudibleAlertSP.shiftBeep, 0.3),
+      Priority.LOW, VisualAlert.none, AudibleAlertSP.shiftBeep, 0.2),
   },
 
   EventNameSP.shiftHold: {
